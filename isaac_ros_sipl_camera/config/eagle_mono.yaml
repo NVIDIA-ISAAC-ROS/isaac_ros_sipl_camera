@@ -1,0 +1,46 @@
+%YAML 1.2
+# SPDX-FileCopyrightText: NVIDIA CORPORATION & AFFILIATES
+# Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+# Default parameters for running VB1940 Eagle stereo camera as a single sensor mono camera
+# VB1940 is a CoE stereo camera with 2560x1984 resolution @ 30fps
+
+sipl_camera:
+  ros__parameters:
+    # Platform configuration
+    platform_config: "VB1940_Camera"
+    
+    # CoE network configuration
+    hsb_name: "hsb_0"
+    hsb_id: 0
+    interface_name: "mgbe0_0"
+    ip_address: "192.168.0.2"       # Empty = use platform default
+    mac_address: ""                 # Empty = use platform default
+    
+    # Output encoding
+    encoding_desired: "nv12"
+    
+    # Timestamp configuration
+    use_hw_timestamp: true
+    
+    # TF frame names
+    camera_link_frame_name: "camera"
+
+    # Camera calibration
+    camera_info_url: "package://isaac_ros_sipl_camera/config/mock_mono_camera_info.yaml"
+
+
