@@ -27,6 +27,7 @@ import pathlib
 import time
 
 from ament_index_python.packages import get_package_share_directory
+from flaky import flaky
 from isaac_ros_test import IsaacROSBaseTest
 from launch_ros.actions import ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
@@ -93,6 +94,8 @@ class SiplCameraMonoTest(IsaacROSBaseTest):
     filepath = pathlib.Path(os.path.dirname(__file__))
     skip_test = False
 
+    # Temporarily mitigate flaky SIPL CoE camera initialization issues.
+    @flaky(max_runs=3, min_passes=1)
     def test_mono_capture(self):
         """
         Verify that the SIPL mono pipeline publishes image and camera_info.

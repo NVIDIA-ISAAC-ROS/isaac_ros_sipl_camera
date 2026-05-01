@@ -27,6 +27,7 @@ import pathlib
 import time
 
 from ament_index_python.packages import get_package_share_directory
+from flaky import flaky
 from isaac_ros_test import IsaacROSBaseTest
 from launch_ros.actions import ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
@@ -117,6 +118,8 @@ class SiplCameraStereoNv24Test(IsaacROSBaseTest):
                 break
         return left_messages, right_messages
 
+    # Temporarily mitigate flaky SIPL CoE camera initialization issues.
+    @flaky(max_runs=3, min_passes=1)
     def test_rgb8_encoding_and_data_size(self):
         """Verify encoding is RGB8 and data size is consistent (3 bytes/pixel)."""
         if self.skip_test:

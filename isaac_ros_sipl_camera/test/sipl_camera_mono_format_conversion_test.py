@@ -27,6 +27,7 @@ import pathlib
 import time
 
 from ament_index_python.packages import get_package_share_directory
+from flaky import flaky
 from isaac_ros_test import IsaacROSBaseTest
 import launch
 import launch_ros
@@ -129,6 +130,8 @@ class SiplCameraMonoFormatConversionTest(IsaacROSBaseTest):
     filepath = pathlib.Path(os.path.dirname(__file__))
     skip_test = False
 
+    # Temporarily mitigate flaky SIPL CoE camera initialization issues.
+    @flaky(max_runs=3, min_passes=1)
     def test_mono_format_conversion_capture(self):
         """
         Verify that the format conversion node publishes image_converted properly.

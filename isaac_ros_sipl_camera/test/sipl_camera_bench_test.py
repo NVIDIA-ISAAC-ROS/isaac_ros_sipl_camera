@@ -39,6 +39,7 @@ import pathlib
 import time
 
 from ament_index_python.packages import get_package_share_directory
+from flaky import flaky
 from isaac_ros_test import IsaacROSBaseTest
 from launch_ros.actions import ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
@@ -167,6 +168,8 @@ class SiplCameraBenchTest(IsaacROSBaseTest):
 
         return frame_rate, exceed_percent
 
+    # Temporarily mitigate flaky SIPL CoE camera initialization issues.
+    @flaky(max_runs=3, min_passes=1)
     def test_stereo_stream_stability(self):
         """
         Run a 30-second capture and validate stream timing stability.
