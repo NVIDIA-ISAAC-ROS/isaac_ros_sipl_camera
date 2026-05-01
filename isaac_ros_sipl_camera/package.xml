@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>isaac_ros_sipl_camera</name>
-  <version>4.3.0</version>
+  <version>4.4.0</version>
   <description>ROS 2 camera driver for NVIDIA SIPL Cameras</description>
   <maintainer email="isaac-ros-maintainers@nvidia.com">Isaac ROS Maintainers</maintainer>
   <license>Apache-2.0</license>
@@ -31,6 +31,7 @@
   <test_depend>isaac_ros_test</test_depend>
   <test_depend>iputils-ping</test_depend>
   <test_depend>launch_testing_ament_cmake</test_depend>
+  <test_depend>python3-flaky</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

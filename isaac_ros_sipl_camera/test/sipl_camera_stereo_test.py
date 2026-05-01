@@ -31,6 +31,7 @@ import time
 import unittest
 
 from ament_index_python.packages import get_package_share_directory
+from flaky import flaky
 from isaac_ros_test import IsaacROSBaseTest
 from launch_ros.actions import ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
@@ -97,6 +98,8 @@ class SiplCameraStereoTest(IsaacROSBaseTest):
     filepath = pathlib.Path(os.path.dirname(__file__))
     skip_test = False
 
+    # Temporarily mitigate flaky SIPL CoE camera initialization issues.
+    @flaky(max_runs=3, min_passes=1)
     def test_stereo_capture(self):
         """
         Verify that both left and right SIPL pipelines publish image and camera_info.
@@ -174,6 +177,7 @@ class SiplCameraStereoTest(IsaacROSBaseTest):
                 f'{side} image_raw and camera_info frame_ids do not match')
 
     @unittest.skip('SIPL driver does not yet guarantee frame-level sync')
+    @flaky(max_runs=3, min_passes=1)
     def test_stereo_exact_time_sync(self):
         """
         Verify cross-camera exact time synchronization.
