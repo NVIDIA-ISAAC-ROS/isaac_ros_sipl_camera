@@ -66,11 +66,15 @@ def launch_setup(context, *args, **kwargs):
     image_height = 1984
 
     # SIPL monocular camera node
+    sipl_params = [param_file]
+    if encoding_desired_val in ('nv12', 'nv24'):
+        sipl_params.append({'encoding_desired': encoding_desired_val})
+
     sipl_camera_node = ComposableNode(
         name='sipl_camera',
         package='isaac_ros_sipl_camera',
         plugin='isaac_ros::sipl::SiplCameraNode',
-        parameters=[param_file],
+        parameters=sipl_params,
     )
 
     downstream_nodes = []
@@ -84,7 +88,12 @@ def launch_setup(context, *args, **kwargs):
                 'encoding_desired': encoding_desired_val,
                 'image_width': image_width,
                 'image_height': image_height,
-                'num_blocks': 40,
+                # SIPL ISP buffers are allocated with NvSciColorStd_REC709_ER
+                # (see sipl_buffer_manager.cpp), so use the BT.709 matrix.
+                # CV-CUDA AdvCvtColor does not support full-range (_ER) variants
+                # today, so Y contrast will be slightly off vs. a true full-range
+                # decode; the chroma matrix is what matters most and is correct here.
+                'yuv_color_spec': 'bt709',
             }],
             remappings=[
                 ('image', 'image_converted'),

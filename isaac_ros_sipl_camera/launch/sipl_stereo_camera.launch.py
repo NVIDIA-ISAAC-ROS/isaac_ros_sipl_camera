@@ -65,27 +65,38 @@ def launch_setup(context, *args, **kwargs):
     image_width = 2560
     image_height = 1984
 
-    # SIPL stereo camera node (publishes native NV12/NV24)
+    # SIPL stereo camera node
+    sipl_params = [param_file]
+    if encoding_desired_val in ('nv12', 'nv24'):
+        sipl_params.append({'encoding_desired': encoding_desired_val})
+
     sipl_stereo_node = ComposableNode(
         name='sipl_stereo_camera',
         package='isaac_ros_sipl_camera',
         plugin='isaac_ros::sipl::SiplStereoCameraNode',
-        parameters=[param_file],
+        parameters=sipl_params,
     )
 
     downstream_nodes = []
 
     if needs_conversion:
+        # SIPL ISP buffers are allocated with NvSciColorStd_REC709_ER
+        # (see sipl_buffer_manager.cpp), so use the BT.709 matrix.
+        # CV-CUDA AdvCvtColor does not support full-range (_ER) variants
+        # today, so Y contrast will be slightly off vs. a true full-range
+        # decode; the chroma matrix is what matters most and is correct here.
+        converter_params = {
+            'encoding_desired': encoding_desired_val,
+            'image_width': image_width,
+            'image_height': image_height,
+            'yuv_color_spec': 'bt709',
+        }
+
         left_converter = ComposableNode(
             name='left_format_converter',
             package='isaac_ros_image_proc',
             plugin='nvidia::isaac_ros::image_proc::ImageFormatConverterNode',
-            parameters=[{
-                'encoding_desired': encoding_desired_val,
-                'image_width': image_width,
-                'image_height': image_height,
-                'num_blocks': 40,
-            }],
+            parameters=[converter_params],
             remappings=[
                 ('image_raw', 'left/image_raw'),
                 ('image', 'left/image_converted'),
@@ -96,12 +107,7 @@ def launch_setup(context, *args, **kwargs):
             name='right_format_converter',
             package='isaac_ros_image_proc',
             plugin='nvidia::isaac_ros::image_proc::ImageFormatConverterNode',
-            parameters=[{
-                'encoding_desired': encoding_desired_val,
-                'image_width': image_width,
-                'image_height': image_height,
-                'num_blocks': 40,
-            }],
+            parameters=[converter_params],
             remappings=[
                 ('image_raw', 'right/image_raw'),
                 ('image', 'right/image_converted'),

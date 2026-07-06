@@ -125,7 +125,6 @@ target_link_libraries(sipl_camera_node
   ${NVSIPL_QUERY_LIB}
   ${NVSIPL_PIPELINE_LIB}
   ${_sipl_common_link_libs}
-  magic_enum::magic_enum
 )
 
 # Stereo camera node library
@@ -145,9 +144,9 @@ foreach(_tgt IN ITEMS sipl_camera_node sipl_stereo_camera_node)
   target_include_directories(${_tgt} PUBLIC ${EIGEN3_INCLUDE_DIR})
 endforeach()
 
-# Set RPATH so NVIDIA SIPL libs and transitive GXF extension libs are
+# Set RPATH so NVIDIA SIPL libs and transitive NITROS extension libs are
 # discoverable at runtime.  The three properties below match the pattern
-# used by every other NITROS-consuming package (e.g. custom_nitros_image).
+# used by every other NITROS-consuming package.
 foreach(_tgt IN ITEMS sipl_buffer_manager sipl_camera_node sipl_stereo_camera_node)
   set_target_properties(${_tgt} PROPERTIES
     BUILD_WITH_INSTALL_RPATH TRUE
@@ -195,6 +194,12 @@ if(BUILD_TESTING)
     add_launch_test(test/sipl_camera_bench_test.py ${_sipl_test_env})
     add_launch_test(test/sipl_camera_stereo_override_test.py ${_sipl_test_env})
     add_launch_test(test/sipl_camera_mono_override_test.py ${_sipl_test_env})
+
+    ament_add_gtest(tsc_correlator_test test/tsc_correlator_test.cpp)
+    target_include_directories(tsc_correlator_test PUBLIC
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+    ament_target_dependencies(tsc_correlator_test rclcpp)
+
   endif()
 endif()
 
