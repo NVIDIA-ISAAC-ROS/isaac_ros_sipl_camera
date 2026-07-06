@@ -89,7 +89,6 @@ nvsipl::SIPLStatus SiplBufferManager::allocateAndRegisterBuffers(
   nvsipl::INvSIPLCamera * camera,
   uint32_t sensor_id,
   nvsipl::INvSIPLClient::ConsumerDesc::OutputType output_type,
-  bool enable_cpu_access,
   NvSciBufSurfSampleType surf_sample_type)
 {
   struct AttrListGuard
@@ -141,19 +140,16 @@ nvsipl::SIPLStatus SiplBufferManager::allocateAndRegisterBuffers(
   NvSciRmGpuId gpu_id;
   std::memcpy(&gpu_id.bytes, uuid.bytes, sizeof(gpu_id.bytes));
 
-  // Define attributes for ISP/CPU access.
+  // Define attributes for ISP output buffers.
   // These specific attributes (PitchLinear, NV12, SemiPlanar) are critical for compatibility
   // We explicitly request these attributes to ensure the NvSciBuf buffer is allocated
   // with a format (NV12 Pitch Linear) that is compatible with both the SIPL ISP output
   // and the downstream CUDA/ROS consumers. Without these explicit requests, NvSciBuf
   // might allocate BlockLinear or other formats that are not supported by our CUDA mapping logic.
 
-  // Enable the two CPU access variables if need to read to cpu memory like write to disk
-  // - is_cpu_access_req: Hints that the CPU needs to map this buffer.
-  // - is_cpu_cache_enabled: Improves CPU read performance (cached), but requires
-  //   cache maintenance (flush/invalidate).
-  const bool is_cpu_access_req = enable_cpu_access;
-  const bool is_cpu_cache_enabled = enable_cpu_access;
+  // CPU mapping is not requested; buffers are consumed on GPU (CUDA) only.
+  constexpr bool is_cpu_access_req = false;
+  constexpr bool is_cpu_cache_enabled = false;
 
   constexpr NvSciBufAttrValImageLayoutType layout = NvSciBufImage_PitchLinearType;
   constexpr NvSciBufSurfType surf_type = NvSciSurfType_YUV;
@@ -169,8 +165,8 @@ nvsipl::SIPLStatus SiplBufferManager::allocateAndRegisterBuffers(
     {NvSciBufGeneralAttrKey_RequiredPerm, &access_perm, sizeof(access_perm)},
     {NvSciBufGeneralAttrKey_GpuId, &gpu_id, sizeof(gpu_id)},
 
-    // ISP/CPU Specific Attributes (Indices 3-11)
-    // Required for ISP output to ensure NV12 format and CPU access for processing/debugging
+    // ISP image attributes (Indices 3-11)
+    // Required for ISP output to ensure NV12 format
     {NvSciBufGeneralAttrKey_NeedCpuAccess, &is_cpu_access_req, sizeof(is_cpu_access_req)},
     {NvSciBufGeneralAttrKey_EnableCpuCache, &is_cpu_cache_enabled, sizeof(is_cpu_cache_enabled)},
     {NvSciBufImageAttrKey_Layout, &layout, sizeof(layout)},
@@ -392,6 +388,14 @@ nvsipl::SIPLStatus SiplBufferManager::getBufferAttributes(
   buffer_attr_cache_[sci_buf_obj] = attrs;
 
   return nvsipl::NVSIPL_STATUS_OK;
+}
+
+nvsipl::SIPLStatus SiplBufferManager::queryAllocatedBufferAttributes(BufferAttributes & attrs)
+{
+  if (buffers_.empty()) {
+    return nvsipl::NVSIPL_STATUS_ERROR;
+  }
+  return getBufferAttributes(buffers_[0], attrs);
 }
 
 nvsipl::SIPLStatus SiplBufferManager::mapNvmmToCuda(

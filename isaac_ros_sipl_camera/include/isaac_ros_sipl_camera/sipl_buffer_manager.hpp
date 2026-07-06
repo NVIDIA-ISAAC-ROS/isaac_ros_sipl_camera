@@ -73,7 +73,6 @@ public:
    * @param camera SIPL camera instance
    * @param sensor_id Sensor ID from CameraSystemConfig
    * @param output_type Output type (ISP0, ISP1, ISP2, or ICP)
-   * @param enable_cpu_access If true, enables CPU access and ReadWrite permissions (needed for VPI/OpenCV)
    * @param surf_sample_type Surface sample type (e.g., 420 for NV12, 444 for NV24). Ignored for ICP.
    * @return nvsipl::SIPLStatus Success or error status
    */
@@ -81,7 +80,6 @@ public:
     nvsipl::INvSIPLCamera * camera,
     uint32_t sensor_id,
     nvsipl::INvSIPLClient::ConsumerDesc::OutputType output_type,
-    bool enable_cpu_access = false,
     NvSciBufSurfSampleType surf_sample_type = NvSciSurfSampleType_420);
 
   /**
@@ -122,6 +120,17 @@ public:
     CudaDevicePtr * out_cuda_buffer,
     size_t * out_cuda_buffer_size,
     BufferAttributes * out_attrs);
+
+  /**
+   * @brief Query buffer attributes from the first allocated buffer
+   *
+   * All buffers in a pool share the same NvSciBufAttrList, so querying
+   * the first is representative. Must be called after allocateAndRegisterBuffers().
+   *
+   * @param attrs Output buffer attributes structure
+   * @return nvsipl::SIPLStatus Success or error status
+   */
+  nvsipl::SIPLStatus queryAllocatedBufferAttributes(BufferAttributes & attrs);
 
   /**
    * @brief Get the logger

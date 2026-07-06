@@ -84,7 +84,7 @@ def generate_test_description():
                 'encoding_desired': ENCODING_DESIRED,
                 'image_width': image_width,
                 'image_height': image_height,
-                'num_blocks': 40,
+                'yuv_color_spec': 'bt709',
             }],
             remappings=[
                 ('image', 'image_converted'),
