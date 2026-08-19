@@ -85,7 +85,7 @@ SiplBufferManager::~SiplBufferManager()
   buffers_.clear();
 }
 
-nvsipl::SIPLStatus SiplBufferManager::allocateAndRegisterBuffers(
+nvsipl::SIPLStatus SiplBufferManager::allocateBuffers(
   nvsipl::INvSIPLCamera * camera,
   uint32_t sensor_id,
   nvsipl::INvSIPLClient::ConsumerDesc::OutputType output_type,
@@ -196,7 +196,11 @@ nvsipl::SIPLStatus SiplBufferManager::allocateAndRegisterBuffers(
   nvsipl::SIPLStatus status = camera->GetImageAttributes(
     sensor_id, output_type, attr_list.list);
   if (status != nvsipl::NVSIPL_STATUS_OK) {
-    throw std::runtime_error("Failed to get SIPL image attributes");
+    throw std::runtime_error(
+      "Failed to get SIPL image attributes for sensor " +
+      std::to_string(sensor_id) + " output_type=" +
+      std::to_string(static_cast<int>(output_type)) +
+      " (SIPL status " + std::to_string(static_cast<int>(status)) + ").");
   }
 
   // Reconcile attribute lists
@@ -225,19 +229,32 @@ nvsipl::SIPLStatus SiplBufferManager::allocateAndRegisterBuffers(
     buffers_.push_back(buf_obj);
   }
 
-  // Register buffers with SIPL camera
-  status = camera->RegisterImages(sensor_id, output_type, buffers_);
-
   if (!buffers_.empty() && enable_debug_logs_) {
     logBufferAttributes(buffers_[0]);
   }
 
-  if (status != nvsipl::NVSIPL_STATUS_OK) {
-    RCLCPP_FATAL(get_logger(), "Failed to register images with SIPL camera (status: %d, type: %d)",
-      static_cast<int>(status), static_cast<int>(output_type));
-    throw std::runtime_error("Failed to register images with SIPL camera");
+  return nvsipl::NVSIPL_STATUS_OK;
+}
+
+nvsipl::SIPLStatus SiplBufferManager::registerBuffers(
+  nvsipl::INvSIPLCamera * camera,
+  uint32_t sensor_id,
+  nvsipl::INvSIPLClient::ConsumerDesc::OutputType output_type)
+{
+  if (buffers_.empty()) {
+    throw std::runtime_error(
+      "registerBuffers called before allocateBuffers (sensor " +
+      std::to_string(sensor_id) + ", output_type=" +
+      std::to_string(static_cast<int>(output_type)) + ")");
   }
 
+  auto status = camera->RegisterImages(sensor_id, output_type, buffers_);
+  if (status != nvsipl::NVSIPL_STATUS_OK) {
+    RCLCPP_FATAL(get_logger(),
+      "Failed to register images with SIPL camera (status: %d, type: %d, sensor: %u)",
+      static_cast<int>(status), static_cast<int>(output_type), sensor_id);
+    throw std::runtime_error("Failed to register images with SIPL camera");
+  }
   return nvsipl::NVSIPL_STATUS_OK;
 }
 

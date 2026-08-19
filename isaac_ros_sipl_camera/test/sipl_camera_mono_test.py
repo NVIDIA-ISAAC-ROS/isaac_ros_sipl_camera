@@ -25,13 +25,13 @@ matching timestamps.
 import os
 import pathlib
 import time
+import unittest
 
 from ament_index_python.packages import get_package_share_directory
 from flaky import flaky
 from isaac_ros_test import IsaacROSBaseTest
 from launch_ros.actions import ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
-import launch_testing
 import pytest
 import rclpy
 
@@ -55,44 +55,39 @@ RGB8_BYTES_PER_PIXEL = 3.0
 
 @pytest.mark.rostest
 def generate_test_description():
-    if detect_ethernet_camera():
-        SiplCameraMonoTest.skip_test = False
+    if not detect_ethernet_camera():
+        raise unittest.SkipTest('No SIPL camera detected. Skipping test.')
 
-        config_path = os.path.join(
-            get_package_share_directory('isaac_ros_sipl_camera'),
-            'config', 'eagle_mono.yaml')
-        namespace = SiplCameraMonoTest.generate_namespace()
+    config_path = os.path.join(
+        get_package_share_directory('isaac_ros_sipl_camera'),
+        'config', 'eagle_mono.yaml')
+    namespace = SiplCameraMonoTest.generate_namespace()
 
-        sipl_mono_node = ComposableNode(
-            name='sipl_camera',
-            package='isaac_ros_sipl_camera',
-            plugin='isaac_ros::sipl::SiplCameraNode',
+    sipl_mono_node = ComposableNode(
+        name='sipl_camera',
+        package='isaac_ros_sipl_camera',
+        plugin='isaac_ros::sipl::SiplCameraNode',
+        namespace=namespace,
+        parameters=load_config_for_test(
+            config_path, namespace, 'sipl_camera', 'sipl_mono_container')
+        + [{'encoding_desired': ENCODING_DESIRED}],
+    )
+
+    return SiplCameraMonoTest.generate_test_description([
+        ComposableNodeContainer(
+            name='sipl_mono_container',
+            package='rclcpp_components',
+            executable='component_container_mt',
+            composable_node_descriptions=[sipl_mono_node],
             namespace=namespace,
-            parameters=load_config_for_test(
-                config_path, namespace, 'sipl_camera', 'sipl_mono_container')
-            + [{'encoding_desired': ENCODING_DESIRED}],
+            output='screen',
+            arguments=['--ros-args', '--log-level', 'info'],
         )
-
-        return SiplCameraMonoTest.generate_test_description([
-            ComposableNodeContainer(
-                name='sipl_mono_container',
-                package='rclcpp_components',
-                executable='component_container_mt',
-                composable_node_descriptions=[sipl_mono_node],
-                namespace=namespace,
-                output='screen',
-                arguments=['--ros-args', '--log-level', 'info'],
-            )
-        ])
-    else:
-        SiplCameraMonoTest.skip_test = True
-        return SiplCameraMonoTest.generate_test_description(
-            [launch_testing.actions.ReadyToTest()])
+    ])
 
 
 class SiplCameraMonoTest(IsaacROSBaseTest):
     filepath = pathlib.Path(os.path.dirname(__file__))
-    skip_test = False
 
     # Temporarily mitigate flaky SIPL CoE camera initialization issues.
     @flaky(max_runs=3, min_passes=1)
@@ -103,9 +98,6 @@ class SiplCameraMonoTest(IsaacROSBaseTest):
         Asserts that (image_raw, camera_info) pair messages are
         received within the timeout.
         """
-        if self.skip_test:
-            self.skipTest('No SIPL camera detected. Skipping test.')
-
         received_messages = []
 
         self.create_exact_time_sync_logging_subscribers(

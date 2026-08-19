@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>isaac_ros_sipl_camera</name>
-  <version>4.5.0</version>
+  <version>4.6.0</version>
   <description>ROS 2 camera driver for NVIDIA SIPL Cameras</description>
   <maintainer email="isaac-ros-maintainers@nvidia.com">Isaac ROS Maintainers</maintainer>
   <license>Apache-2.0</license>
@@ -14,6 +14,7 @@
   <depend>rclcpp_components</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>tf2</depend>
   <depend>tf2_ros</depend>
   <depend>camera_info_manager</depend>
   <depend>isaac_ros_common</depend>
@@ -23,7 +24,9 @@
 
   <!-- For launch files and examples -->
   <exec_depend>isaac_ros_image_proc</exec_depend>
+  <exec_depend>isaac_ros_h264_encoder</exec_depend>
   <exec_depend>isaac_ros_launch_utils</exec_depend>
+  <exec_depend>isaac_ros_nitros_topic_tools</exec_depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_lint_auto</test_depend>

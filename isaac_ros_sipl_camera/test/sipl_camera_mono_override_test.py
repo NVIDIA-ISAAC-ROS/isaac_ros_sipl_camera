@@ -27,12 +27,12 @@ Validates that:
 import os
 import pathlib
 import time
+import unittest
 
 from ament_index_python.packages import get_package_share_directory
 from isaac_ros_test import IsaacROSBaseTest
 from launch_ros.actions import ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
-import launch_testing
 import numpy as np
 import pytest
 import rclpy
@@ -47,38 +47,34 @@ import yaml
 
 @pytest.mark.rostest
 def generate_test_description():
-    if detect_ethernet_camera():
-        SiplCameraMonoOverrideTest.skip_test = False
+    if not detect_ethernet_camera():
+        raise unittest.SkipTest('No SIPL camera detected. Skipping test.')
 
-        config_path = os.path.join(
-            get_package_share_directory('isaac_ros_sipl_camera'),
-            'config', 'eagle_mono.yaml')
-        namespace = SiplCameraMonoOverrideTest.generate_namespace()
+    config_path = os.path.join(
+        get_package_share_directory('isaac_ros_sipl_camera'),
+        'config', 'eagle_mono.yaml')
+    namespace = SiplCameraMonoOverrideTest.generate_namespace()
 
-        sipl_mono_node = ComposableNode(
-            name='sipl_camera',
-            package='isaac_ros_sipl_camera',
-            plugin='isaac_ros::sipl::SiplCameraNode',
+    sipl_mono_node = ComposableNode(
+        name='sipl_camera',
+        package='isaac_ros_sipl_camera',
+        plugin='isaac_ros::sipl::SiplCameraNode',
+        namespace=namespace,
+        parameters=load_config_for_test(
+            config_path, namespace, 'sipl_camera', 'sipl_mono_override_container'),
+    )
+
+    return SiplCameraMonoOverrideTest.generate_test_description([
+        ComposableNodeContainer(
+            name='sipl_mono_override_container',
+            package='rclcpp_components',
+            executable='component_container_mt',
+            composable_node_descriptions=[sipl_mono_node],
             namespace=namespace,
-            parameters=load_config_for_test(
-                config_path, namespace, 'sipl_camera', 'sipl_mono_override_container'),
+            output='screen',
+            arguments=['--ros-args', '--log-level', 'info'],
         )
-
-        return SiplCameraMonoOverrideTest.generate_test_description([
-            ComposableNodeContainer(
-                name='sipl_mono_override_container',
-                package='rclcpp_components',
-                executable='component_container_mt',
-                composable_node_descriptions=[sipl_mono_node],
-                namespace=namespace,
-                output='screen',
-                arguments=['--ros-args', '--log-level', 'info'],
-            )
-        ])
-    else:
-        SiplCameraMonoOverrideTest.skip_test = True
-        return SiplCameraMonoOverrideTest.generate_test_description(
-            [launch_testing.actions.ReadyToTest()])
+    ])
 
 
 class SiplCameraMonoOverrideTest(IsaacROSBaseTest):
@@ -86,8 +82,6 @@ class SiplCameraMonoOverrideTest(IsaacROSBaseTest):
 
     pkg_share = get_package_share_directory('isaac_ros_sipl_camera')
     calibration_path = os.path.join(pkg_share, 'config', 'mock_mono_camera_info.yaml')
-
-    skip_test = False
 
     def setUp(self):
         super().setUp()
@@ -133,9 +127,6 @@ class SiplCameraMonoOverrideTest(IsaacROSBaseTest):
         Checks that the camera -> camera_optical static transform follows
         the REP-103 optical frame convention (90-degree rotation).
         """
-        if self.skip_test:
-            self.skipTest('No SIPL camera detected. Skipping test.')
-
         TIMEOUT = 10
         MIN_MESSAGES = 10
 

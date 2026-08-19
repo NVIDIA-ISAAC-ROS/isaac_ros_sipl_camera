@@ -21,6 +21,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -39,7 +40,9 @@
 #include "isaac_ros_nitros/types/cuda_memory_pool.hpp"
 
 #include "isaac_ros_sipl_camera/sipl_buffer_manager.hpp"
+#include "isaac_ros_sipl_camera/transport_adapter.hpp"
 #include "isaac_ros_sipl_camera/tsc_correlator.hpp"
+#include "isaac_ros_sipl_camera/stereo_timestamp_aligner.hpp"
 
 #include "isaac_ros_common/cuda_stream.hpp"
 #include "isaac_ros_common/qos.hpp"
@@ -76,7 +79,7 @@ protected:
   struct PipelineDescriptor
   {
     std::string name;
-    uint32_t camera_index;                // index into camera_system_config_.cameras
+    uint32_t sensor_id;                   // SIPL global sensor id (CommonSensorConfig::id)
     std::string frame_id;                 // optical frame name for headers
     sensor_msgs::msg::CameraInfo camera_info;
     bool camera_info_loaded = false;
@@ -98,12 +101,12 @@ protected:
     NvSciSyncObj sci_sync_isp0 = nullptr;
     std::shared_ptr<SiplBufferManager> buffer_manager_icp;
     std::shared_ptr<SiplBufferManager> buffer_manager_isp0;
-    rclcpp::Publisher<nvidia::isaac_ros::nitros::NitrosImage>::SharedPtr image_pub;
-    rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_pub;
     std::thread pipeline_thread;
     std::thread event_thread;
     uint64_t dropped_pool_exhausted = 0U;
     std::unique_ptr<nvidia::isaac_ros::nitros::CUDAMemoryPool> compact_pool;
+    rclcpp::Publisher<nvidia::isaac_ros::nitros::NitrosImage>::SharedPtr image_pub;
+    rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_pub;
     // Determined at init from ISP0 buffer layout. When false the Y and UV
     // planes are already contiguous and a single memcpy replaces the
     // two-copy compaction path.
@@ -141,13 +144,17 @@ protected:
   /// Publish static TF transforms. Override in stereo for the 4-transform tree.
   virtual void publishStaticTransforms();
 
+  /// Perform transport-specific preparation immediately before SIPL Start().
+  virtual void prepareCaptureStart();
+
   // --- Shared camera info / utilities for derived nodes ---
   sensor_msgs::msg::CameraInfo loadCameraInfoFromFile(
     const std::string & camera_info_url);
 
   // Shared utilities
-  std::vector<uint8_t> loadNitoFile(const std::string & module_name);
+  std::vector<uint8_t> loadNitoFile(const std::string & path);
   uint64_t extractTscTimestamp(nvsipl::INvSIPLClient::INvSIPLNvMBuffer * buffer);
+  uint64_t nanosecondsToTscTicks(uint64_t nanoseconds) const;
   NvSciBufSurfSampleType getSurfSampleTypeFromEncoding() const;
 
   void handlePipelineNotification(
@@ -158,13 +165,29 @@ protected:
     CameraPipeline & pipeline,
     std::chrono::steady_clock::time_point isp0_start_time);
 
+  // Acquires a compact pool buffer, populates it with NV12/NV24 bytes, and publishes
+  // NitrosImage + matching CameraInfo.
+  //
+  // `step_bytes` is the row stride from `attrs.plane_pitches[0]`. This may not equal
+  // image_width_ when the ISP produces per-row padding that the compactor preserves.
+  bool publishFrame(
+    CameraPipeline & pipeline,
+    const std_msgs::msg::Header & header,
+    uint32_t step_bytes,
+    const std::function<bool(uint8_t * compact_ptr, size_t block_size)> & fill_fn);
+
   // --- Per-pipeline runtime state ---
   std::vector<CameraPipeline> pipelines_;
 
   // SIPL API instances
   std::unique_ptr<nvsipl::INvSIPLCamera> sipl_camera_;
   std::unique_ptr<nvsipl::INvSIPLCameraQuery> sipl_query_;
-  nvsipl::CameraSystemConfig camera_system_config_;
+  nvsipl::sensorconfig::SensorSystemConfig sensor_system_config_;
+  std::unique_ptr<TransportAdapter> transport_adapter_;
+  // Return the CommonSensorConfig matching the given SIPL global sensor id.
+  // Throws if not found.
+  const nvsipl::sensorconfig::CommonSensorConfig &
+  getSensorConfig(uint32_t sensor_id) const;
 
   // NvSci modules
   std::shared_ptr<NvSciBufModuleRec> sci_buf_module_;
@@ -186,10 +209,24 @@ protected:
   std::string platform_config_;
   std::string encoding_desired_;
   std::string camera_link_frame_name_;
-  std::string nito_path_;
+  std::string nito_file_;
   bool enable_debug_logs_{false};
   rclcpp::QoS output_qos_;
   int output_buffer_pool_size_{0};
+  uint16_t link_mask_{0x0001};
+  double first_frame_timeout_s_{5.0};
+  // Flag to mark when the first frame timeout has already been reported.
+  std::atomic<bool> first_frame_timeout_reported_{false};
+
+  // Stereo timestamp alignment (active only for 2-pipeline stereo with HW timestamps).
+  bool align_stereo_timestamps_{false};
+  double max_timestamp_diff_us_{500.0};
+  double expected_fps_{30.0};
+  // Count of stereo pairs that arrived skewed beyond max_timestamp_diff_us (kept
+  // unaligned, so the downstream ExactTime gate drops them). Incremented from both
+  // pipeline threads. Note: this counts skew-induced drops only, not pairs lost
+  // because one frame of the pair never arrived.
+  std::atomic<uint64_t> stereo_desync_count_{0};
 
   // Camera info caching (loaded in constructor, moved into pipeline by initialize())
   sensor_msgs::msg::CameraInfo camera_info_;
@@ -198,8 +235,13 @@ protected:
 private:
   // --- Internal init helpers (called by initialize()) ---
   void setupSiplCamera(size_t num_sensors);
+  std::vector<PipelineDescriptor> resolvePipelineDescriptors(
+    std::vector<PipelineDescriptor> requested_descriptors);
   void allocateBuffersForPipeline(CameraPipeline & pipeline);
+  void registerBuffersForPipeline(CameraPipeline & pipeline);
   void createPublisherForPipeline(CameraPipeline & pipeline);
+  /// Allocate the per-pipeline compact GPU buffer pools used by publishFrame.
+  void allocateCompactPools();
   void startAllPipelines();
   void stopAllPipelines();
 
@@ -210,17 +252,14 @@ private:
   void publishCameraInfo(const CameraPipeline & pipeline, const std_msgs::msg::Header & header);
 
   void allocateSync(
-    uint32_t camera_index,
+    uint32_t sensor_id,
     nvsipl::INvSIPLClient::ConsumerDesc::OutputType output_type,
     NvSciSyncObj & sync);
-  void registerAutoControlPlugin(uint32_t camera_index);
-  void applyNetworkOverrides();
+  void registerAutoControlPlugin(uint32_t sensor_id);
 
   bool validateBufferFormat(
     const BufferAttributes & attrs,
     const CameraPipeline & pipeline) const;
-  void parseMacAddress(const std::string & mac_str, uint8_t mac_bytes[6]);
-  uint32_t parseIpAddress(const std::string & ip_str);
 
   NvSciSyncModule sci_sync_module_;
 
@@ -231,6 +270,7 @@ private:
   std::string optical_frame_name_;
 
   TscCorrelator tsc_correlator_;
+  std::unique_ptr<StereoTimestampAligner> stereo_timestamp_aligner_;
 };
 
 }  // namespace sipl

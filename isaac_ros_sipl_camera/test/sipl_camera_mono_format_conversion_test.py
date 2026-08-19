@@ -25,15 +25,14 @@ image_converted and camera_info with matching timestamps.
 import os
 import pathlib
 import time
+import unittest
 
 from ament_index_python.packages import get_package_share_directory
 from flaky import flaky
 from isaac_ros_test import IsaacROSBaseTest
-import launch
 import launch_ros
 from launch_ros.actions import ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
-import launch_testing
 import pytest
 import rclpy
 
@@ -54,81 +53,69 @@ ENCODING_DESIRED = 'mono8'
 
 @pytest.mark.rostest
 def generate_test_description():
-    if detect_ethernet_camera():
-        SiplCameraMonoFormatConversionTest.skip_test = False
+    if not detect_ethernet_camera():
+        raise unittest.SkipTest('No SIPL camera detected. Skipping test.')
 
-        config_path = os.path.join(
-            get_package_share_directory('isaac_ros_sipl_camera'),
-            'config', 'eagle_mono.yaml')
-        namespace = SiplCameraMonoFormatConversionTest.generate_namespace()
+    config_path = os.path.join(
+        get_package_share_directory('isaac_ros_sipl_camera'),
+        'config', 'eagle_mono.yaml')
+    namespace = SiplCameraMonoFormatConversionTest.generate_namespace()
 
-        # SIPL monocular camera node (produces nv12 by default if not set)
-        sipl_mono_node = ComposableNode(
-            name='sipl_camera',
-            package='isaac_ros_sipl_camera',
-            plugin='isaac_ros::sipl::SiplCameraNode',
-            namespace=namespace,
-            parameters=load_config_for_test(
-                config_path, namespace, 'sipl_camera', 'sipl_mono_container')
-        )
+    # SIPL monocular camera node (produces nv12 by default if not set)
+    sipl_mono_node = ComposableNode(
+        name='sipl_camera',
+        package='isaac_ros_sipl_camera',
+        plugin='isaac_ros::sipl::SiplCameraNode',
+        namespace=namespace,
+        parameters=load_config_for_test(
+            config_path, namespace, 'sipl_camera', 'sipl_mono_container')
+    )
 
-        image_width = 2560
-        image_height = 1984
+    image_width = 2560
+    image_height = 1984
 
-        format_converter = ComposableNode(
-            name='format_converter',
-            package='isaac_ros_image_proc',
-            plugin='nvidia::isaac_ros::image_proc::ImageFormatConverterNode',
-            namespace=namespace,
-            parameters=[{
-                'encoding_desired': ENCODING_DESIRED,
-                'image_width': image_width,
-                'image_height': image_height,
-                'yuv_color_spec': 'bt709',
-            }],
-            remappings=[
-                ('image', 'image_converted'),
-            ],
-        )
+    format_converter = ComposableNode(
+        name='format_converter',
+        package='isaac_ros_image_proc',
+        plugin='nvidia::isaac_ros::image_proc::ImageFormatConverterNode',
+        namespace=namespace,
+        parameters=[{
+            'encoding_desired': ENCODING_DESIRED,
+            'image_width': image_width,
+            'image_height': image_height,
+            'yuv_color_spec': 'bt709',
+        }],
+        remappings=[
+            ('image', 'image_converted'),
+        ],
+    )
 
-        container = ComposableNodeContainer(
-            name='sipl_mono_container',
-            package='rclcpp_components',
-            executable='component_container_mt',
-            namespace=namespace,
-            output='screen',
-            arguments=['--ros-args', '--log-level', 'info'],
-        )
+    container = ComposableNodeContainer(
+        name='sipl_mono_container',
+        package='rclcpp_components',
+        executable='component_container_mt',
+        namespace=namespace,
+        output='screen',
+        arguments=['--ros-args', '--log-level', 'info'],
+    )
 
-        load_format_converter = launch_ros.actions.LoadComposableNodes(
-            target_container=container,
-            composable_node_descriptions=[format_converter],
-        )
+    load_format_converter = launch_ros.actions.LoadComposableNodes(
+        target_container=container,
+        composable_node_descriptions=[format_converter],
+    )
 
-        load_camera = launch_ros.actions.LoadComposableNodes(
-            target_container=container,
-            composable_node_descriptions=[sipl_mono_node],
-        )
+    load_camera = launch_ros.actions.LoadComposableNodes(
+        target_container=container,
+        composable_node_descriptions=[sipl_mono_node],
+    )
 
-        # Delay before loading the SIPL camera node when downstream NITROS nodes are
-        # present to avoid crash from GXF graph slow initialization.
-        deferred_camera = launch.actions.TimerAction(
-            period=2.0,
-            actions=[load_camera],
-        )
-
-        return SiplCameraMonoFormatConversionTest.generate_test_description([
-            container, load_format_converter, deferred_camera
-        ])
-    else:
-        SiplCameraMonoFormatConversionTest.skip_test = True
-        return SiplCameraMonoFormatConversionTest.generate_test_description(
-            [launch_testing.actions.ReadyToTest()])
+    return SiplCameraMonoFormatConversionTest.generate_test_description([
+        container, load_format_converter, load_camera
+    ])
 
 
 class SiplCameraMonoFormatConversionTest(IsaacROSBaseTest):
     filepath = pathlib.Path(os.path.dirname(__file__))
-    skip_test = False
 
     # Temporarily mitigate flaky SIPL CoE camera initialization issues.
     @flaky(max_runs=3, min_passes=1)
@@ -139,9 +126,6 @@ class SiplCameraMonoFormatConversionTest(IsaacROSBaseTest):
         Asserts that time-synced (image_converted, camera_info) pair messages are
         received within the timeout.
         """
-        if self.skip_test:
-            self.skipTest('No SIPL camera detected. Skipping test.')
-
         received_messages = []
 
         self.create_exact_time_sync_logging_subscribers(

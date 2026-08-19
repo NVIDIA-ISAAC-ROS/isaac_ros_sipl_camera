@@ -22,9 +22,14 @@ Measures FPS and jitter for each camera stream independently (left and right
 are treated as separate pipelines). This test runs even when the two sensors
 do not share a common capture timestamp.
 
+The test description is parametrized over every entry in STEREO_CONFIGS
+(Eagle CoE and Hawk GMSL today). launch_testing runs the benchmark once per
+config; each run is gated by that config's hardware detector and skips if the
+camera is not detected.
+
 Metrics reported per stream:
   - Frame count
-  - Mean frame rate (expected nominal: 30 FPS)
+  - Mean frame rate (expected nominal: EXPECTED_FPS)
   - Max / min / mean jitter
   - Percentage of frames exceeding the jitter tolerance
 
@@ -37,6 +42,7 @@ Pass criteria:
 import os
 import pathlib
 import time
+import unittest
 
 from ament_index_python.packages import get_package_share_directory
 from flaky import flaky
@@ -51,11 +57,11 @@ import rclpy
 from sensor_msgs.msg import CameraInfo, Image
 
 from sipl_camera_test_utils import (
-    detect_ethernet_camera, EXPECTED_FPS,
-    load_config_for_test, STARTUP_TIME_MAX_DELAY,
+    camera_present, EXPECTED_FPS, load_config_for_test,
+    STARTUP_TIME_MAX_DELAY, STEREO_CONFIGS,
 )
 
-# Stream timing thresholds (VB1940 Eagle nominally at 30 FPS)
+# Stream timing thresholds (stereo SIPL cameras nominally at EXPECTED_FPS)
 FPS_ACCEPTABLE_VARIANCE = 5
 MIN_ACCEPTABLE_FPS = EXPECTED_FPS - FPS_ACCEPTABLE_VARIANCE
 MAX_ACCEPTABLE_FPS = EXPECTED_FPS + FPS_ACCEPTABLE_VARIANCE
@@ -71,47 +77,51 @@ MAX_ROW_WIDTH = 70
 
 
 @pytest.mark.rostest
-def generate_test_description():
-    if detect_ethernet_camera():
-        SiplCameraBenchTest.skip_test = False
+@launch_testing.parametrize('config_name', STEREO_CONFIGS)
+def generate_test_description(config_name):
+    # generate_test_description() is invoked once per config, immediately before
+    # that config's tests run, so storing state on the class is safe here.
+    SiplCameraBenchTest.config_name = config_name
 
-        config_path = os.path.join(
-            get_package_share_directory('isaac_ros_sipl_camera'),
-            'config', 'eagle_stereo.yaml')
-        namespace = SiplCameraBenchTest.generate_namespace()
+    if not camera_present(config_name):
+        raise unittest.SkipTest(
+            f'No SIPL camera detected for {config_name}. Skipping test.')
 
-        sipl_stereo_node = ComposableNode(
-            name='sipl_stereo_camera',
-            package='isaac_ros_sipl_camera',
-            plugin='isaac_ros::sipl::SiplStereoCameraNode',
+    config_path = os.path.join(
+        get_package_share_directory('isaac_ros_sipl_camera'),
+        'config', config_name)
+    namespace = SiplCameraBenchTest.generate_namespace()
+
+    sipl_stereo_node = ComposableNode(
+        name='sipl_stereo_camera',
+        package='isaac_ros_sipl_camera',
+        plugin='isaac_ros::sipl::SiplStereoCameraNode',
+        namespace=namespace,
+        parameters=load_config_for_test(
+            config_path, namespace, 'sipl_stereo_camera', 'sipl_bench_container'),
+    )
+
+    # This time is the closest approximation to the start of nodes being launched.
+    SiplCameraBenchTest.launch_time_ns = time.time_ns()
+
+    return SiplCameraBenchTest.generate_test_description([
+        ComposableNodeContainer(
+            name='sipl_bench_container',
+            package='rclcpp_components',
+            executable='component_container_mt',
+            composable_node_descriptions=[sipl_stereo_node],
             namespace=namespace,
-            parameters=load_config_for_test(
-                config_path, namespace, 'sipl_stereo_camera', 'sipl_bench_container'),
+            output='screen',
+            arguments=['--ros-args', '--log-level', 'info'],
         )
-
-        # This time is the closest approximation to the start of nodes being launched.
-        SiplCameraBenchTest.launch_time_ns = time.time_ns()
-
-        return SiplCameraBenchTest.generate_test_description([
-            ComposableNodeContainer(
-                name='sipl_bench_container',
-                package='rclcpp_components',
-                executable='component_container_mt',
-                composable_node_descriptions=[sipl_stereo_node],
-                namespace=namespace,
-                output='screen',
-                arguments=['--ros-args', '--log-level', 'info'],
-            )
-        ])
-    else:
-        SiplCameraBenchTest.skip_test = True
-        return SiplCameraBenchTest.generate_test_description(
-            [launch_testing.actions.ReadyToTest()])
+    ])
 
 
 class SiplCameraBenchTest(IsaacROSBaseTest):
     filepath = pathlib.Path(os.path.dirname(__file__))
-    skip_test = False
+    # Set in generate_test_description() so failure messages can identify
+    # which camera was being tested.
+    config_name = ''
 
     def _extract_timestamps_ms(self, messages):
         """Extract header timestamps in milliseconds from a list of messages."""
@@ -178,9 +188,6 @@ class SiplCameraBenchTest(IsaacROSBaseTest):
         satisfy the frame-rate and jitter stability thresholds to pass.
         The first frame latency is also asserted against STARTUP_TIME_MAX_DELAY.
         """
-        if self.skip_test:
-            self.skipTest('No SIPL camera detected. Skipping test.')
-
         topics = [
             'left/image_raw', 'right/image_raw',
             'left/camera_info', 'right/camera_info',

@@ -22,8 +22,12 @@
 sipl_stereo_camera:
   ros__parameters:
     # Platform configuration
-    platform_config: "VB1940_Camera"
-    
+    # VB1940 platform_config has independent SIPL pipelines without synchronized capture. 
+    platform_config: "VB1940"
+
+    # ISP calibration blob (NITO) for this module, installed on the Jetson host.
+    nito_file: "/var/nvidia/nvcam/settings/sipl/vb1940.nito"
+
     # CoE network configuration
     hsb_name: "hsb_0"
     hsb_id: 0
@@ -36,6 +40,9 @@ sipl_stereo_camera:
     
     # Timestamp configuration
     use_hw_timestamp: true
+
+    align_stereo_timestamps: false
+    max_timestamp_diff_us: 1000.0
     
     # TF frame names
     camera_link_frame_name: "stereo"

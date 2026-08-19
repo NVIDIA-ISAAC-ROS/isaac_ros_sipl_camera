@@ -46,6 +46,7 @@ set(_sipl_required_libs
   nvsipl
   nvsipl_query
   nvsipl_pipeline
+  nvcam_fsync
   nvscibuf
   nvscisync
   nvscicommon
@@ -114,6 +115,10 @@ target_link_libraries(sipl_buffer_manager
   ${_sipl_common_link_libs}
 )
 
+ament_auto_add_library(sipl_transport_adapter SHARED
+  src/transport_adapter.cpp
+)
+
 # Base camera node library
 ament_auto_add_library(sipl_camera_node SHARED
   src/sipl_camera_node.cpp
@@ -121,6 +126,7 @@ ament_auto_add_library(sipl_camera_node SHARED
 
 target_link_libraries(sipl_camera_node
   sipl_buffer_manager
+  sipl_transport_adapter
   ${NVSIPL_LIB}
   ${NVSIPL_QUERY_LIB}
   ${NVSIPL_PIPELINE_LIB}
@@ -134,9 +140,10 @@ ament_auto_add_library(sipl_stereo_camera_node SHARED
 
 target_link_libraries(sipl_stereo_camera_node
   sipl_camera_node
+  ${NVCAM_FSYNC_LIB}
 )
 
-foreach(_tgt IN ITEMS sipl_buffer_manager sipl_camera_node sipl_stereo_camera_node)
+foreach(_tgt IN ITEMS sipl_buffer_manager sipl_transport_adapter sipl_camera_node sipl_stereo_camera_node)
   target_include_directories(${_tgt} PUBLIC ${_sipl_public_includes})
 endforeach()
 
@@ -147,7 +154,7 @@ endforeach()
 # Set RPATH so NVIDIA SIPL libs and transitive NITROS extension libs are
 # discoverable at runtime.  The three properties below match the pattern
 # used by every other NITROS-consuming package.
-foreach(_tgt IN ITEMS sipl_buffer_manager sipl_camera_node sipl_stereo_camera_node)
+foreach(_tgt IN ITEMS sipl_buffer_manager sipl_transport_adapter sipl_camera_node sipl_stereo_camera_node)
   set_target_properties(${_tgt} PROPERTIES
     BUILD_WITH_INSTALL_RPATH TRUE
     BUILD_RPATH_USE_ORIGIN TRUE
@@ -200,8 +207,24 @@ if(BUILD_TESTING)
       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
     ament_target_dependencies(tsc_correlator_test rclcpp)
 
+    ament_add_gtest(transport_adapter_test test/transport_adapter_test.cpp)
+    target_link_libraries(transport_adapter_test sipl_transport_adapter)
+    target_include_directories(transport_adapter_test PUBLIC
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+      ${_sipl_public_includes})
+    ament_target_dependencies(transport_adapter_test rclcpp)
+
+    # Pure-logic test for the lock-free stereo timestamp aligner (no rclcpp/hardware).
+    ament_add_gtest(stereo_timestamp_aligner_test
+      test/stereo_timestamp_aligner_test.cpp)
+    target_include_directories(stereo_timestamp_aligner_test PUBLIC
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+
   endif()
 endif()
+
+# Python helpers shared by the mono and stereo launch files
+ament_python_install_package(${PROJECT_NAME})
 
 ament_auto_package(USE_SCOPED_HEADER_INSTALL_DIR INSTALL_TO_SHARE launch config)
 

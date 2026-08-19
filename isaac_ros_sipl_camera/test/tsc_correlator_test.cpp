@@ -89,6 +89,15 @@ TEST_F(TscCorrelatorTest, TicksToNsConsistentWithFrequency)
   EXPECT_EQ(correlator.ticksToNs(0), 0);
 }
 
+TEST_F(TscCorrelatorTest, NanosecondsToTscTicksConsistentWithFrequency)
+{
+  auto clock = std::make_shared<rclcpp::Clock>(RCL_ROS_TIME);
+  TestableTscCorrelator correlator(clock);
+
+  const uint64_t frequency = correlator.tscFrequency();
+  EXPECT_EQ(correlator.nanosecondsToTscTicks(1'000'000'000U), frequency);
+}
+
 TEST_F(TscCorrelatorTest, TicksToNsPrecisionEdgeCases)
 {
   auto clock = std::make_shared<rclcpp::Clock>(RCL_ROS_TIME);
