@@ -195,6 +195,13 @@ public:
     return rclcpp::Time(ros_ns, clock_->get_clock_type());
   }
 
+  /// Convert a duration in nanoseconds to TSC ticks.
+  uint64_t nanosecondsToTscTicks(uint64_t nanoseconds) const
+  {
+    return static_cast<uint64_t>(
+      (static_cast<__uint128_t>(nanoseconds) * tsc_freq_) / kNanosecondsPerSecond);
+  }
+
 protected:
   /// Convert raw TSC tick counts to nanoseconds.
   int64_t ticksToNs(uint64_t ticks) const

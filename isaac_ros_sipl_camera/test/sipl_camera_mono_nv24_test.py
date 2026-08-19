@@ -25,13 +25,13 @@ it published images.
 import os
 import pathlib
 import time
+import unittest
 
 from ament_index_python.packages import get_package_share_directory
 from flaky import flaky
 from isaac_ros_test import IsaacROSBaseTest
 from launch_ros.actions import ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
-import launch_testing
 import pytest
 import rclpy
 
@@ -55,44 +55,39 @@ RGB8_BYTES_PER_PIXEL = 3.0
 
 @pytest.mark.rostest
 def generate_test_description():
-    if detect_ethernet_camera():
-        SiplCameraMonoNv24Test.skip_test = False
+    if not detect_ethernet_camera():
+        raise unittest.SkipTest('No SIPL camera detected. Skipping test.')
 
-        config_path = os.path.join(
-            get_package_share_directory('isaac_ros_sipl_camera'),
-            'config', 'eagle_mono.yaml')
-        namespace = SiplCameraMonoNv24Test.generate_namespace()
+    config_path = os.path.join(
+        get_package_share_directory('isaac_ros_sipl_camera'),
+        'config', 'eagle_mono.yaml')
+    namespace = SiplCameraMonoNv24Test.generate_namespace()
 
-        sipl_mono_node = ComposableNode(
-            name='sipl_camera',
-            package='isaac_ros_sipl_camera',
-            plugin='isaac_ros::sipl::SiplCameraNode',
+    sipl_mono_node = ComposableNode(
+        name='sipl_camera',
+        package='isaac_ros_sipl_camera',
+        plugin='isaac_ros::sipl::SiplCameraNode',
+        namespace=namespace,
+        parameters=load_config_for_test(
+            config_path, namespace, 'sipl_camera', 'sipl_mono_nv24_container')
+        + [{'encoding_desired': ENCODING_DESIRED}],
+    )
+
+    return SiplCameraMonoNv24Test.generate_test_description([
+        ComposableNodeContainer(
+            name='sipl_mono_nv24_container',
+            package='rclcpp_components',
+            executable='component_container_mt',
+            composable_node_descriptions=[sipl_mono_node],
             namespace=namespace,
-            parameters=load_config_for_test(
-                config_path, namespace, 'sipl_camera', 'sipl_mono_nv24_container')
-            + [{'encoding_desired': ENCODING_DESIRED}],
+            output='screen',
+            arguments=['--ros-args', '--log-level', 'info'],
         )
-
-        return SiplCameraMonoNv24Test.generate_test_description([
-            ComposableNodeContainer(
-                name='sipl_mono_nv24_container',
-                package='rclcpp_components',
-                executable='component_container_mt',
-                composable_node_descriptions=[sipl_mono_node],
-                namespace=namespace,
-                output='screen',
-                arguments=['--ros-args', '--log-level', 'info'],
-            )
-        ])
-    else:
-        SiplCameraMonoNv24Test.skip_test = True
-        return SiplCameraMonoNv24Test.generate_test_description(
-            [launch_testing.actions.ReadyToTest()])
+    ])
 
 
 class SiplCameraMonoNv24Test(IsaacROSBaseTest):
     filepath = pathlib.Path(os.path.dirname(__file__))
-    skip_test = False
 
     def _receive_synced_messages(self):
         """Spin until at least minimum number of time-synced (image, camera_info) pairs arrive."""
@@ -113,9 +108,6 @@ class SiplCameraMonoNv24Test(IsaacROSBaseTest):
     @flaky(max_runs=3, min_passes=1)
     def test_rgb8_encoding_and_data_size(self):
         """Verify encoding is RGB8 and data size is consistent (3 bytes/pixel)."""
-        if self.skip_test:
-            self.skipTest('No SIPL camera detected. Skipping test.')
-
         received_messages = self._receive_synced_messages()
 
         self.assertGreaterEqual(

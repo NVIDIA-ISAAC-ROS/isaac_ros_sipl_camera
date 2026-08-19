@@ -47,10 +47,12 @@ public:
 protected:
   std::vector<PipelineDescriptor> describePipelines() override;
   void publishStaticTransforms() override;
+  void prepareCaptureStart() override;
 
 private:
   std::string left_camera_frame_name_;
   std::string right_camera_frame_name_;
+  uint32_t fsync_group_id_{0U};
 
   // Left camera info is inherited from the base class (camera_info_ / camera_info_loaded_).
   // Right camera info (loaded during construction, moved into pipeline by initialize())

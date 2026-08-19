@@ -17,7 +17,14 @@
 
 #include "isaac_ros_sipl_camera/sipl_stereo_camera_node.hpp"
 
+#include "NvCamFsync.h"
 #include <Eigen/Dense>
+
+#include <cinttypes>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+
 #include "tf2/LinearMath/Quaternion.h"
 #include "tf2/LinearMath/Transform.h"
 
@@ -109,7 +116,85 @@ SiplStereoCameraNode::SiplStereoCameraNode(const rclcpp::NodeOptions & options)
       right_camera_info_url.c_str());
   }
 
+  // Stereo timestamp automatic adjustment. When enabled, stereo streams with capture
+  // synchronization will have the lagging frame adopt the first-arriving partner's timestamp
+  // if the difference is within the threshold. Differences above the threshold are left unadjusted.
+  {
+    rcl_interfaces::msg::ParameterDescriptor d;
+    d.description =
+      "For stereo synchronized cameras, automatically override timestamps to publish identical "
+      "timestamps for left/right frame pairs if the difference is within the max_timestamp_diff_us "
+      "threshold. If paired, the lagging frame adopts the first arriving partner's timestamp.";
+    align_stereo_timestamps_ = declare_parameter<bool>("align_stereo_timestamps", false, d);
+  }
+  max_timestamp_diff_us_ = declare_parameter<double>("max_timestamp_diff_us", 500.0);
+  expected_fps_ = declare_parameter<double>("expected_fps", 30.0);
+  {
+    rcl_interfaces::msg::ParameterDescriptor d;
+    d.description =
+      "[GMSL stereo only] Device-tree camera FSYNC group used when "
+      "starting capture.";
+    const int64_t fsync_group_id =
+      declare_parameter<int64_t>("fsync_group_id", 0, d);
+    if (fsync_group_id < 0 ||
+      fsync_group_id > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
+    {
+      throw std::runtime_error("fsync_group_id must fit in uint32; got " +
+                               std::to_string(fsync_group_id));
+    }
+    fsync_group_id_ = static_cast<uint32_t>(fsync_group_id);
+  }
+  if (expected_fps_ <= 0.0) {
+    throw std::runtime_error(
+      "expected_fps must be > 0; got " + std::to_string(expected_fps_));
+  }
+  if (max_timestamp_diff_us_ <= 0.0) {
+    throw std::runtime_error(
+      "max_timestamp_diff_us must be > 0; got " + std::to_string(max_timestamp_diff_us_));
+  }
+
   initialize(describePipelines());
+}
+
+void SiplStereoCameraNode::prepareCaptureStart()
+{
+  if (transport_adapter_->type() != TransportAdapter::Type::kGmsl) {
+    return;
+  }
+
+  const auto read_tsc_ticks = []() {
+      uint64_t ticks;
+      asm volatile ("mrs %0, cntvct_el0" : "=r" (ticks));
+      return ticks;
+    };
+
+  // Starting SIPL while FSYNC is already producing frame-trigger pulses can leave the sequentially
+  // initialized Hawk sensors one frame apart. Scheduling the first pulse after both sensors are
+  // ready gives them a common frame trigger and prevents the GSML stereo cameras from becoming
+  // one frame apart.
+  const CAM_FSYNC_STATUS stop_status = cam_fsync_stop_group(fsync_group_id_);
+  if (stop_status != CAM_FSYNC_OK && stop_status != CAM_FSYNC_GROUP_IDLE) {
+    throw std::runtime_error(
+        "Failed to stop camera FSYNC group " + std::to_string(fsync_group_id_) +
+        " (status=" + std::to_string(static_cast<int>(stop_status)) +
+        "; verify fsync_group_id and read/write access to /dev/fsync-group)");
+  }
+
+  // Give camera startup time to finish before the first pulse.
+  constexpr uint64_t kFsyncStartMarginNs = 500'000'000U;
+  const uint64_t start_tsc_ticks =
+    read_tsc_ticks() + nanosecondsToTscTicks(kFsyncStartMarginNs);
+  RCLCPP_INFO(
+    get_logger(),
+    "Scheduling camera FSYNC group %u first edge at TSC tick %" PRIu64 " (+500 ms)",
+    fsync_group_id_, start_tsc_ticks);
+  const CAM_FSYNC_STATUS start_status =
+    cam_fsync_program_abs_start_value(fsync_group_id_, start_tsc_ticks);
+  if (start_status != CAM_FSYNC_OK) {
+    throw std::runtime_error(
+        "Failed to schedule camera FSYNC group " + std::to_string(fsync_group_id_) +
+        " (status=" + std::to_string(static_cast<int>(start_status)) + ")");
+  }
 }
 
 std::vector<SiplCameraNode::PipelineDescriptor>

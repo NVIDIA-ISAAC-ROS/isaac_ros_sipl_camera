@@ -18,11 +18,19 @@
 """
 Stereo capture tests for the SIPL camera driver.
 
+The test description is parametrized over every entry in STEREO_CONFIGS
+(Eagle CoE and Hawk GMSL today). launch_testing runs the whole test class once
+per config; each run is gated by that config's hardware detector and skips if the
+camera is not detected.
+
 test_stereo_capture: validates that both left and right pipelines come up and
 publish messages. Each side (left image + camera_info) is verified independently.
 
+test_stereo_camera_info_receive_latency: validates that both camera timestamps
+remain below the SOF-to-CameraInfo callback latency limit for every stereo config.
+
 test_stereo_exact_time_sync: validates cross-camera exact time synchronization
-(all four topics share the same timestamp).
+(all four topics share the same timestamp) when enabled by the camera configuration.
 """
 
 import os
@@ -42,13 +50,18 @@ import rclpy
 from sensor_msgs.msg import CameraInfo, Image
 
 from sipl_camera_test_utils import (
-    detect_ethernet_camera, EXPECTED_FPS,
-    load_config_for_test, STARTUP_TIME_MAX_DELAY,
+    camera_present, EXPECTED_FPS, load_config_for_test,
+    STARTUP_TIME_MAX_DELAY, STEREO_CONFIGS,
 )
 
 TIMEOUT = 15
 # Require a meaningful number of frames but cap at 3 seconds worth.
 MIN_SYNCED_MSGS = min((TIMEOUT - STARTUP_TIME_MAX_DELAY) * EXPECTED_FPS, EXPECTED_FPS * 3)
+
+# A stereo timing regression appeared as a persistent one-frame timestamp offset.
+CAMERA_INFO_LATENCY_WARMUP_FRAMES = EXPECTED_FPS
+CAMERA_INFO_LATENCY_SAMPLE_FRAMES = EXPECTED_FPS * 2
+CAMERA_INFO_LATENCY_MAX_MS = 50.0
 
 # Requested SIPL output format on the publishing node.
 ENCODING_DESIRED = 'nv12'
@@ -58,45 +71,109 @@ RGB8_BYTES_PER_PIXEL = 3.0
 
 
 @pytest.mark.rostest
-def generate_test_description():
-    if detect_ethernet_camera():
-        SiplCameraStereoTest.skip_test = False
+@launch_testing.parametrize('config_name', STEREO_CONFIGS)
+def generate_test_description(config_name):
+    # generate_test_description() is invoked once per config, immediately before
+    # that config's tests run, so storing state on the class is safe here.
+    SiplCameraStereoTest.config_name = config_name
 
-        config_path = os.path.join(
-            get_package_share_directory('isaac_ros_sipl_camera'),
-            'config', 'eagle_stereo.yaml')
-        namespace = SiplCameraStereoTest.generate_namespace()
+    if not camera_present(config_name):
+        raise unittest.SkipTest(
+            f'No SIPL camera detected for {config_name}. Skipping test.')
 
-        sipl_stereo_node = ComposableNode(
-            name='sipl_stereo_camera',
-            package='isaac_ros_sipl_camera',
-            plugin='isaac_ros::sipl::SiplStereoCameraNode',
+    config_path = os.path.join(
+        get_package_share_directory('isaac_ros_sipl_camera'),
+        'config', config_name)
+    namespace = SiplCameraStereoTest.generate_namespace()
+    config_parameters = load_config_for_test(
+        config_path, namespace, 'sipl_stereo_camera', 'sipl_stereo_container')
+    align_stereo_timestamps = config_parameters[0].get('align_stereo_timestamps', False)
+    if not isinstance(align_stereo_timestamps, bool):
+        raise ValueError(
+            f'align_stereo_timestamps must be true or false in {config_name}')
+    SiplCameraStereoTest.supports_stereo_pairing = align_stereo_timestamps
+
+    sipl_stereo_node = ComposableNode(
+        name='sipl_stereo_camera',
+        package='isaac_ros_sipl_camera',
+        plugin='isaac_ros::sipl::SiplStereoCameraNode',
+        namespace=namespace,
+        parameters=config_parameters + [{
+            'encoding_desired': ENCODING_DESIRED,
+            # Latency checks measure SOF stamp -> callback; require HW SOF timestamps.
+            'use_hw_timestamp': True,
+        }],
+    )
+
+    return SiplCameraStereoTest.generate_test_description([
+        ComposableNodeContainer(
+            name='sipl_stereo_container',
+            package='rclcpp_components',
+            executable='component_container_mt',
+            composable_node_descriptions=[sipl_stereo_node],
             namespace=namespace,
-            parameters=load_config_for_test(
-                config_path, namespace, 'sipl_stereo_camera', 'sipl_stereo_container')
-            + [{'encoding_desired': ENCODING_DESIRED}],
+            output='screen',
+            arguments=['--ros-args', '--log-level', 'info'],
         )
-
-        return SiplCameraStereoTest.generate_test_description([
-            ComposableNodeContainer(
-                name='sipl_stereo_container',
-                package='rclcpp_components',
-                executable='component_container_mt',
-                composable_node_descriptions=[sipl_stereo_node],
-                namespace=namespace,
-                output='screen',
-                arguments=['--ros-args', '--log-level', 'info'],
-            )
-        ])
-    else:
-        SiplCameraStereoTest.skip_test = True
-        return SiplCameraStereoTest.generate_test_description(
-            [launch_testing.actions.ReadyToTest()])
+    ])
 
 
 class SiplCameraStereoTest(IsaacROSBaseTest):
     filepath = pathlib.Path(os.path.dirname(__file__))
-    skip_test = False
+    # Set in generate_test_description() so messages identify the active config.
+    config_name = ''
+    supports_stereo_pairing = False
+
+    def test_stereo_camera_info_receive_latency(self):
+        """Verify left and right SOF-to-CameraInfo callback latency.
+
+        Requires use_hw_timestamp=True so messages are stamped with the SOF timestamp.
+        We subscribe to camera_info messages since it's cheaper than subscribing to image_raw
+        but uses the same timestamp.
+        """
+        topics = ('left/camera_info', 'right/camera_info')
+        received_messages = {}
+        self.create_logging_subscribers(
+            [(topic, CameraInfo) for topic in topics],
+            received_messages,
+            use_namespace_lookup=False,
+            accept_multiple_messages=True,
+            add_received_message_timestamps=True)
+
+        required_frames = (
+            CAMERA_INFO_LATENCY_WARMUP_FRAMES + CAMERA_INFO_LATENCY_SAMPLE_FRAMES)
+        end_time = time.time() + TIMEOUT
+        while time.time() < end_time:
+            rclpy.spin_once(self.node, timeout_sec=0.1)
+            if all(len(received_messages[topic]) >= required_frames for topic in topics):
+                break
+
+        for topic in topics:
+            self.assertGreaterEqual(
+                len(received_messages[topic]), required_frames,
+                f'[{self.config_name}] {topic} produced too few CameraInfo messages: '
+                f'{len(received_messages[topic])} < {required_frames}')
+
+            latency_ms = []
+            sampled_messages = received_messages[topic][
+                CAMERA_INFO_LATENCY_WARMUP_FRAMES:required_frames]
+            for message, received_time_s in sampled_messages:
+                stamped_time_s = (
+                    message.header.stamp.sec + message.header.stamp.nanosec / 1e9)
+                latency_ms.append((received_time_s - stamped_time_s) * 1e3)
+
+            self.assertGreaterEqual(
+                min(latency_ms), 0.0,
+                f'[{self.config_name}] {topic} has a timestamp later than callback receipt')
+            max_latency_ms = max(latency_ms)
+            print(
+                f'[{self.config_name}] {topic} SOF-to-receive '
+                f'maximum: {max_latency_ms:.3f} ms')
+            self.assertLess(
+                max_latency_ms, CAMERA_INFO_LATENCY_MAX_MS,
+                f'[{self.config_name}] {topic} SOF-to-receive '
+                f'maximum latency {max_latency_ms:.3f} ms is not below '
+                f'{CAMERA_INFO_LATENCY_MAX_MS:.1f} ms')
 
     # Temporarily mitigate flaky SIPL CoE camera initialization issues.
     @flaky(max_runs=3, min_passes=1)
@@ -106,9 +183,6 @@ class SiplCameraStereoTest(IsaacROSBaseTest):
 
         Each side is checked independently here.
         """
-        if self.skip_test:
-            self.skipTest('No SIPL camera detected. Skipping test.')
-
         left_messages = []
         right_messages = []
 
@@ -131,12 +205,12 @@ class SiplCameraStereoTest(IsaacROSBaseTest):
 
         self.assertGreaterEqual(
             len(left_messages), MIN_SYNCED_MSGS,
-            f'Left camera produced too few synced image + camera_info pairs: '
-            f'{len(left_messages)} < {MIN_SYNCED_MSGS}')
+            f'[{self.config_name}] Left camera produced too few synced '
+            f'image + camera_info pairs: {len(left_messages)} < {MIN_SYNCED_MSGS}')
         self.assertGreaterEqual(
             len(right_messages), MIN_SYNCED_MSGS,
-            f'Right camera produced too few synced image + camera_info pairs: '
-            f'{len(right_messages)} < {MIN_SYNCED_MSGS}')
+            f'[{self.config_name}] Right camera produced too few synced '
+            f'image + camera_info pairs: {len(right_messages)} < {MIN_SYNCED_MSGS}')
 
         # Verify per-side timestamp consistency, encoding, and data size
         for side, messages in [('Left', left_messages), ('Right', right_messages)]:
@@ -176,17 +250,18 @@ class SiplCameraStereoTest(IsaacROSBaseTest):
                 img_frame_ids.pop(), info_frame_ids.pop(),
                 f'{side} image_raw and camera_info frame_ids do not match')
 
-    @unittest.skip('SIPL driver does not yet guarantee frame-level sync')
     @flaky(max_runs=3, min_passes=1)
     def test_stereo_exact_time_sync(self):
         """
         Verify cross-camera exact time synchronization.
 
-        All four topics (left/image_raw, right/image_raw, left/camera_info,
-        right/camera_info) must share the same timestamp.
+        For configurations that support timestamp alignment, all four topics
+        (left/image_raw, right/image_raw, left/camera_info, right/camera_info)
+        must share the same timestamp.
         """
-        if self.skip_test:
-            self.skipTest('No SIPL camera detected. Skipping test.')
+        if not self.supports_stereo_pairing:
+            self.skipTest(
+                f'[{self.config_name}] Stereo timestamp alignment is disabled by configuration')
 
         received_messages = []
 
@@ -204,7 +279,7 @@ class SiplCameraStereoTest(IsaacROSBaseTest):
 
         self.assertTrue(
             len(received_messages) > MIN_SYNCED_MSGS,
-            'No cross-camera time-synced messages received')
+            f'[{self.config_name}] No cross-camera time-synced messages received')
 
         # This should basically be guaranteed by the exact time sync subscriber.
         for msg in received_messages:

@@ -55,7 +55,7 @@ struct BufferAttributes
  * This class handles:
  * - NvSciBuf allocation for SIPL camera registration
  * - Buffer attribute extraction and analysis
- * - GPU-to-GPU memory copies from NVMM (SIPL) to CUDA buffers
+ * - CUDA-NvSciBuf mapping of NVMM (SIPL) buffers to CUDA device memory
  */
 class SiplBufferManager
 {
@@ -68,19 +68,25 @@ public:
   ~SiplBufferManager();
 
   /**
-   * @brief Allocate and register NvSci buffers with SIPL camera
+   * @brief Allocate NvSci buffer objects via GetImageAttributes + reconcile.
    *
-   * @param camera SIPL camera instance
-   * @param sensor_id Sensor ID from CameraSystemConfig
-   * @param output_type Output type (ISP0, ISP1, ISP2, or ICP)
-   * @param surf_sample_type Surface sample type (e.g., 420 for NV12, 444 for NV24). Ignored for ICP.
-   * @return nvsipl::SIPLStatus Success or error status
+   * Must be called after SetPipelineCfg and before Init().
    */
-  nvsipl::SIPLStatus allocateAndRegisterBuffers(
+  nvsipl::SIPLStatus allocateBuffers(
     nvsipl::INvSIPLCamera * camera,
     uint32_t sensor_id,
     nvsipl::INvSIPLClient::ConsumerDesc::OutputType output_type,
     NvSciBufSurfSampleType surf_sample_type = NvSciSurfSampleType_420);
+
+  /**
+   * @brief Register the allocated buffers with the SIPL camera.
+   *
+   * Must be called after Init() and ISP outputs must register after ICP buffers.
+   */
+  nvsipl::SIPLStatus registerBuffers(
+    nvsipl::INvSIPLCamera * camera,
+    uint32_t sensor_id,
+    nvsipl::INvSIPLClient::ConsumerDesc::OutputType output_type);
 
   /**
    * @brief Get buffer attributes from NvSciBufObj
@@ -125,7 +131,7 @@ public:
    * @brief Query buffer attributes from the first allocated buffer
    *
    * All buffers in a pool share the same NvSciBufAttrList, so querying
-   * the first is representative. Must be called after allocateAndRegisterBuffers().
+   * the first is representative. Must be called after allocateBuffers().
    *
    * @param attrs Output buffer attributes structure
    * @return nvsipl::SIPLStatus Success or error status

@@ -17,6 +17,7 @@
 
 """Shared utilities for SIPL camera integration tests."""
 
+import glob
 import os
 import subprocess
 
@@ -27,6 +28,10 @@ SIPL_NETWORK_INTERFACE = 'mgbe0_0'
 SIPL_CAMERA_IP = '192.168.0.2'
 STARTUP_TIME_MAX_DELAY = 10
 EXPECTED_FPS = 30
+
+# Hawk GMSL defaults (single Hawk on link 0).
+HAWK_RESOLUTION = (1920, 1200)
+HAWK_LINK_MASK = 0x0001
 
 
 def load_config_for_test(config_path, namespace, node_name, container_name=None):
@@ -73,3 +78,57 @@ def detect_ethernet_camera(interface=SIPL_NETWORK_INTERFACE, camera_ip=SIPL_CAME
         return result.returncode == 0
     except Exception as e:
         raise RuntimeError(f'Failed to ping {camera_ip}: {e}') from e
+
+
+def detect_hawk_camera():
+    """
+    Return True if a Hawk GMSL camera is wired up on this host.
+
+    Detected via the device tree: the kernel only populates
+    ``/proc/device-tree/tegra-camera-platform/modules/*/badge`` with ``ar0234``
+    when the Hawk DT overlay is applied and the GMSL links lock.
+    """
+    for badge in glob.glob('/proc/device-tree/tegra-camera-platform/modules/module*/badge'):
+        try:
+            with open(badge, 'rb') as f:
+                if b'ar0234' in f.read().lower():
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+# Stereo configs that parametrized stereo tests iterate over. Each config is
+# gated by its hardware detector so a host that only has one camera (or none)
+# skips the absent configurations cleanly. Eagle is listed first because it is
+# the day-zero supported path.
+STEREO_CONFIGS = ['eagle_stereo.yaml', 'hawk_stereo.yaml']
+
+CONFIG_DETECTORS = {
+    'eagle_stereo.yaml': detect_ethernet_camera,
+    'hawk_stereo.yaml': detect_hawk_camera,
+}
+
+
+def camera_present(config_name):
+    """Return True if the camera for the given stereo config is detected."""
+    detector = CONFIG_DETECTORS.get(config_name)
+    return bool(detector and detector())
+
+
+def load_camera_info_from_yaml(yaml_path: str):
+    """Load a ROS camera_info YAML file into a sensor_msgs.msg.CameraInfo."""
+    from sensor_msgs.msg import CameraInfo
+
+    with open(yaml_path) as f:
+        data = yaml.safe_load(f)
+
+    info = CameraInfo()
+    info.width = int(data['image_width'])
+    info.height = int(data['image_height'])
+    info.distortion_model = data.get('distortion_model', '')
+    info.k = [float(v) for v in data['camera_matrix']['data']]
+    info.d = [float(v) for v in data['distortion_coefficients']['data']]
+    info.r = [float(v) for v in data['rectification_matrix']['data']]
+    info.p = [float(v) for v in data['projection_matrix']['data']]
+    return info

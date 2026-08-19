@@ -1,0 +1,53 @@
+%YAML 1.2
+# SPDX-FileCopyrightText: NVIDIA CORPORATION & AFFILIATES
+# Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+# Hawk GMSL stereo, AR0234 1920x1200 @ 30 fps.
+# Requires SIPL ownership of the deserializer; see docs/hawk_kenari_setup.md.
+
+sipl_stereo_camera:
+  ros__parameters:
+    # Stereo AR0234 pair on one MAX96712 link, FSYNC-synced.
+    platform_config: "AR0234CS_HAWK"
+
+    # ISP calibration blob (NITO) for this module, installed on the Jetson host.
+    nito_file: "/var/nvidia/nvcam/settings/sipl/AR0234CS_HAWK.nito"
+
+    # Channel 0
+    link_mask: 0x0001
+
+    # Restart FSYNC immediately before SIPL Start() so both sensors begin on the
+    # same scheduled edge. Set this to the device-tree FSYNC group wired to this
+    # camera pair; it stops and restarts every generator in that group. The standard
+    # Hawk Jetson device tree assigns the camera pair to group 0.
+    fsync_group_id: 0
+
+    encoding_desired: "nv12"
+
+    use_hw_timestamp: true
+
+    # Hawk stereo capture skew measured experimentally at <100us; 1ms leaves margin.
+    align_stereo_timestamps: true
+    max_timestamp_diff_us: 1000.0
+
+    camera_link_frame_name: "hawk"
+    left_camera_frame_name: "hawk_left"
+    right_camera_frame_name: "hawk_right"
+
+    # Replace mock calibrations with per-unit calibration when available.
+    camera_info_url: "package://isaac_ros_sipl_camera/config/mock_hawk_left_camera_info.yaml"
+    right_camera_info_url: "package://isaac_ros_sipl_camera/config/mock_hawk_right_camera_info.yaml"

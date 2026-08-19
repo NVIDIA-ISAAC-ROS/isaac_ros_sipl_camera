@@ -22,8 +22,11 @@
 sipl_camera:
   ros__parameters:
     # Platform configuration
-    platform_config: "VB1940_Camera"
-    
+    platform_config: "VB1940"
+
+    # ISP calibration blob (NITO) for this module, installed on the Jetson host.
+    nito_file: "/var/nvidia/nvcam/settings/sipl/vb1940.nito"
+
     # CoE network configuration
     hsb_name: "hsb_0"
     hsb_id: 0

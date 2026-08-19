@@ -15,25 +15,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import os
-
-from ament_index_python.packages import get_package_share_directory
 import isaac_ros_launch_utils as lu
+from isaac_ros_sipl_camera.launch_utils import load_image_size
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction, TimerAction
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import LoadComposableNodes, Node
 from launch_ros.descriptions import ComposableNode
-
-
-# Delay before loading the SIPL camera node when downstream NITROS nodes are
-# present. Downstream NITROS nodes initialize their GXF graph asynchronously;
-# if the camera publishes before that graph is ready, startup frames can be
-# dropped while SIPL ISP buffers are still held. A short delay makes startup
-# successful when downstream GXF nodes are to be loaded.
-# Testing observed 0.5s as the minimum reliable value; 2s provides margin.
-# todo: This might be able to be removed in the near future after GXF-less NITROS.
-_DOWNSTREAM_INIT_DELAY_S = 2.0
 
 
 def launch_setup(context, *args, **kwargs):
@@ -43,6 +31,7 @@ def launch_setup(context, *args, **kwargs):
     param_file = LaunchConfiguration('param_file')
     enable_rectify = LaunchConfiguration('enable_rectify')
     log_level = LaunchConfiguration('log_level')
+    camera_namespace = LaunchConfiguration('camera_namespace').perform(context) or None
 
     # Determine if format conversion and rectification are needed
     encoding_desired_val = encoding_desired.perform(context)
@@ -60,10 +49,7 @@ def launch_setup(context, *args, **kwargs):
 
     needs_conversion = encoding_desired_val not in ('nv12', 'nv24', '')
 
-    # Assume VB1940 Eagle camera resolution as this is the only supported
-    # resolution and camera by SIPL as of implementation.
-    image_width = 2560
-    image_height = 1984
+    image_width, image_height = load_image_size(param_file.perform(context))
 
     # SIPL monocular camera node
     sipl_params = [param_file]
@@ -72,6 +58,7 @@ def launch_setup(context, *args, **kwargs):
 
     sipl_camera_node = ComposableNode(
         name='sipl_camera',
+        namespace=camera_namespace,
         package='isaac_ros_sipl_camera',
         plugin='isaac_ros::sipl::SiplCameraNode',
         parameters=sipl_params,
@@ -82,6 +69,7 @@ def launch_setup(context, *args, **kwargs):
     if needs_conversion:
         format_converter = ComposableNode(
             name='format_converter',
+            namespace=camera_namespace,
             package='isaac_ros_image_proc',
             plugin='nvidia::isaac_ros::image_proc::ImageFormatConverterNode',
             parameters=[{
@@ -108,6 +96,7 @@ def launch_setup(context, *args, **kwargs):
 
         rectify_node = ComposableNode(
             name='rectify',
+            namespace=camera_namespace,
             package='isaac_ros_image_proc',
             plugin='nvidia::isaac_ros::image_proc::RectifyNode',
             parameters=[{
@@ -117,6 +106,23 @@ def launch_setup(context, *args, **kwargs):
             remappings=rectify_remappings,
         )
         downstream_nodes.append(rectify_node)
+
+    if LaunchConfiguration('enable_encoding').perform(context).lower() == 'true':
+        encoder_node = ComposableNode(
+            name='encoder_node',
+            namespace=camera_namespace,
+            package='isaac_ros_h264_encoder',
+            plugin='nvidia::isaac_ros::h264_encoder::EncoderNode',
+            parameters=[{
+                'input_width': image_width,
+                'input_height': image_height,
+            }],
+            remappings=[
+                ('image_raw', 'image_raw'),
+                ('image_compressed', 'image_compressed'),
+            ],
+        )
+        downstream_nodes.append(encoder_node)
 
     # Container
     container_args = []
@@ -132,36 +138,18 @@ def launch_setup(context, *args, **kwargs):
         arguments=container_args,
     )
 
-    if downstream_nodes:
-        # Two-phase loading: bring up downstream nodes first, then load camera
-        # after a short delay so their GXF graphs are ready before first frames.
-        load_downstream = LoadComposableNodes(
-            target_container=target_container,
-            composable_node_descriptions=downstream_nodes,
-        )
-        load_camera = LoadComposableNodes(
-            target_container=target_container,
-            composable_node_descriptions=[sipl_camera_node],
-        )
-        deferred_camera = TimerAction(
-            period=_DOWNSTREAM_INIT_DELAY_S,
-            actions=[load_camera],
-        )
-        launch_actions.extend([container, load_downstream, deferred_camera])
-    else:
-        load_nodes = LoadComposableNodes(
-            target_container=target_container,
-            composable_node_descriptions=[sipl_camera_node],
-        )
-        launch_actions.extend([container, load_nodes])
+    load_nodes = LoadComposableNodes(
+        target_container=target_container,
+        composable_node_descriptions=downstream_nodes + [sipl_camera_node],
+    )
+    launch_actions.extend([container, load_nodes])
 
     return launch_actions
 
 
 def generate_launch_description():
     """Generate launch description for SIPL monocular camera."""
-    pkg_share = get_package_share_directory('isaac_ros_sipl_camera')
-    default_params = os.path.join(pkg_share, 'config', 'eagle_mono.yaml')
+    default_params = str(lu.get_path('isaac_ros_sipl_camera', 'config/eagle_mono.yaml'))
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -181,9 +169,22 @@ def generate_launch_description():
             description='Target container name for composable nodes'
         ),
         DeclareLaunchArgument(
+            'camera_namespace',
+            default_value='',
+            description='ROS namespace for the camera node and its topics '
+            '(default: empty, root namespace)'
+        ),
+        DeclareLaunchArgument(
             'enable_rectify',
             default_value='false',
             description='Enable image rectification via RectifyNode '
+            '(true/false, default: false)'
+        ),
+        DeclareLaunchArgument(
+            'enable_encoding',
+            default_value='false',
+            description='H.264 accelerated encoding of the image to image_compressed via '
+            'isaac_ros_h264_encoder '
             '(true/false, default: false)'
         ),
         DeclareLaunchArgument(
