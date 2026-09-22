@@ -65,9 +65,6 @@ CAMERA_INFO_LATENCY_MAX_MS = 50.0
 
 # Requested SIPL output format on the publishing node.
 ENCODING_DESIRED = 'nv12'
-# Python subscribers receive CPU-adapted images from NITROS as rgb8.
-EXPECTED_SUBSCRIBER_ENCODING = 'rgb8'
-RGB8_BYTES_PER_PIXEL = 3.0
 
 
 @pytest.mark.rostest
@@ -125,7 +122,8 @@ class SiplCameraStereoTest(IsaacROSBaseTest):
     supports_stereo_pairing = False
 
     def test_stereo_camera_info_receive_latency(self):
-        """Verify left and right SOF-to-CameraInfo callback latency.
+        """
+        Verify left and right SOF-to-CameraInfo callback latency.
 
         Requires use_hw_timestamp=True so messages are stamped with the SOF timestamp.
         We subscribe to camera_info messages since it's cheaper than subscribing to image_raw
@@ -219,20 +217,18 @@ class SiplCameraStereoTest(IsaacROSBaseTest):
                     img.header.stamp, info.header.stamp,
                     f'{side} image and camera_info timestamps do not match')
                 self.assertEqual(
-                    img.encoding, EXPECTED_SUBSCRIBER_ENCODING,
-                    f'{side} expected encoding {EXPECTED_SUBSCRIBER_ENCODING}, '
+                    img.encoding, ENCODING_DESIRED,
+                    f'{side} expected encoding {ENCODING_DESIRED}, '
                     f'got {img.encoding}')
-                min_step = int(img.width * RGB8_BYTES_PER_PIXEL)
                 self.assertGreaterEqual(
-                    img.step, min_step,
-                    f'{side} image step ({img.step}) must be >= '
-                    f'width * bytes_per_pixel ({min_step})')
+                    img.step, img.width,
+                    f'{side} image step ({img.step}) must be >= width ({img.width})')
 
-                rgb8_min_size = int(img.width * img.height * RGB8_BYTES_PER_PIXEL)
+                nv12_min_size = img.step * img.height * 3 // 2
                 self.assertGreaterEqual(
-                    len(img.data), rgb8_min_size,
-                    f'{side} data size {len(img.data)} is smaller than RGB8 '
-                    f'minimum ({rgb8_min_size}) for {img.width}x{img.height}')
+                    len(img.data), nv12_min_size,
+                    f'{side} data size {len(img.data)} is smaller than NV12 '
+                    f'minimum ({nv12_min_size}) for {img.width}x{img.height}')
 
         # Verify frame_id consistency within each side
         for side, messages in [('Left', left_messages), ('Right', right_messages)]:

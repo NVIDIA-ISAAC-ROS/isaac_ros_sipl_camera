@@ -53,7 +53,7 @@ def launch_setup(context, *args, **kwargs):
 
     # Stereo frame-pair gating is part of the timestamp-alignment feature: the
     # node aligns left/right capture stamps to a single value, then a
-    # NitrosCameraDropNode ExactTime-syncs the pair and republishes only
+    # CameraDropNode ExactTime-syncs the pair and republishes only
     # complete pairs (drop both if one eye is missing).
     # The enforce_stereo_pairs launch arg is the single switch: it is fed to the
     # node's align_stereo_timestamps parameter and toggles whether the gating
@@ -208,8 +208,8 @@ def launch_setup(context, *args, **kwargs):
         stereo_pair_sync = ComposableNode(
             name='stereo_pair_sync',
             namespace=camera_namespace,
-            package='isaac_ros_nitros_topic_tools',
-            plugin='nvidia::isaac_ros::nitros::NitrosCameraDropNode',
+            package='isaac_ros_topic_tools',
+            plugin='nvidia::isaac_ros::topic_tools::CameraDropNode',
             parameters=[{
                 'mode': 'stereo',
                 'X': 0,
