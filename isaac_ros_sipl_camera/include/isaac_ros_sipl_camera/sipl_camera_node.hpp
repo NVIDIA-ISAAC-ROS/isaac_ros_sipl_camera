@@ -33,11 +33,8 @@
 #include "sensor_msgs/msg/camera_info.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "camera_info_manager/camera_info_manager.hpp"
-#include "tf2/LinearMath/Matrix3x3.h"
+#include "tf2/LinearMath/Matrix3x3.hpp"
 #include "tf2_ros/static_transform_broadcaster.h"
-
-#include "isaac_ros_nitros_image_type/nitros_image.hpp"
-#include "isaac_ros_nitros/types/cuda_memory_pool.hpp"
 
 #include "isaac_ros_sipl_camera/sipl_buffer_manager.hpp"
 #include "isaac_ros_sipl_camera/transport_adapter.hpp"
@@ -57,7 +54,7 @@ namespace sipl
  * @brief Base ROS2 node for SIPL camera integration
  *
  * This node provides direct SIPL API integration for monocular cameras,
- * publishing NITROS-accelerated images with GPU memory management.
+ * publishing CUDA-backed ROS images with GPU memory management.
  *
  * Subclasses override describePipelines() to
  * declare additional sensors and publishStaticTransforms() for custom TF trees.
@@ -103,9 +100,9 @@ protected:
     std::shared_ptr<SiplBufferManager> buffer_manager_isp0;
     std::thread pipeline_thread;
     std::thread event_thread;
-    uint64_t dropped_pool_exhausted = 0U;
-    std::unique_ptr<nvidia::isaac_ros::nitros::CUDAMemoryPool> compact_pool;
-    rclcpp::Publisher<nvidia::isaac_ros::nitros::NitrosImage>::SharedPtr image_pub;
+    // Each pipeline owns its CUDA stream so they are decoupled.
+    ::nvidia::isaac_ros::common::CudaStreamPtr cuda_stream;
+    rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub;
     rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_pub;
     // Determined at init from ISP0 buffer layout. When false the Y and UV
     // planes are already contiguous and a single memcpy replaces the
@@ -165,8 +162,8 @@ protected:
     CameraPipeline & pipeline,
     std::chrono::steady_clock::time_point isp0_start_time);
 
-  // Acquires a compact pool buffer, populates it with NV12/NV24 bytes, and publishes
-  // NitrosImage + matching CameraInfo.
+  // Allocates a CUDA-backed image, populates it with NV12/NV24 bytes, and publishes
+  // sensor_msgs/Image + matching CameraInfo.
   //
   // `step_bytes` is the row stride from `attrs.plane_pitches[0]`. This may not equal
   // image_width_ when the ISP produces per-row padding that the compactor preserves.
@@ -196,8 +193,6 @@ protected:
   // TF broadcasting
   std::unique_ptr<tf2_ros::StaticTransformBroadcaster> tf_static_broadcaster_;
 
-  ::nvidia::isaac_ros::common::CudaStreamPtr cuda_stream_;
-
   // Threading
   std::atomic<bool> stop_capture_;
 
@@ -212,7 +207,6 @@ protected:
   std::string nito_file_;
   bool enable_debug_logs_{false};
   rclcpp::QoS output_qos_;
-  int output_buffer_pool_size_{0};
   uint16_t link_mask_{0x0001};
   double first_frame_timeout_s_{5.0};
   // Flag to mark when the first frame timeout has already been reported.
@@ -240,8 +234,6 @@ private:
   void allocateBuffersForPipeline(CameraPipeline & pipeline);
   void registerBuffersForPipeline(CameraPipeline & pipeline);
   void createPublisherForPipeline(CameraPipeline & pipeline);
-  /// Allocate the per-pipeline compact GPU buffer pools used by publishFrame.
-  void allocateCompactPools();
   void startAllPipelines();
   void stopAllPipelines();
 

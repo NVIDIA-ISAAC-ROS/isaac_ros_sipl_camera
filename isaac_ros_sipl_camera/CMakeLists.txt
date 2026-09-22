@@ -151,9 +151,7 @@ foreach(_tgt IN ITEMS sipl_camera_node sipl_stereo_camera_node)
   target_include_directories(${_tgt} PUBLIC ${EIGEN3_INCLUDE_DIR})
 endforeach()
 
-# Set RPATH so NVIDIA SIPL libs and transitive NITROS extension libs are
-# discoverable at runtime.  The three properties below match the pattern
-# used by every other NITROS-consuming package.
+# Set RPATH so NVIDIA SIPL libraries are discoverable at runtime.
 foreach(_tgt IN ITEMS sipl_buffer_manager sipl_transport_adapter sipl_camera_node sipl_stereo_camera_node)
   set_target_properties(${_tgt} PROPERTIES
     BUILD_WITH_INSTALL_RPATH TRUE

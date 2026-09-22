@@ -48,9 +48,6 @@ MIN_SYNCED_MSGS = min((TIMEOUT - STARTUP_TIME_MAX_DELAY) * EXPECTED_FPS, EXPECTE
 
 # Requested SIPL output format on the publishing node.
 ENCODING_DESIRED = 'nv12'
-# Python subscribers receive CPU-adapted images from NITROS as rgb8.
-EXPECTED_SUBSCRIBER_ENCODING = 'rgb8'
-RGB8_BYTES_PER_PIXEL = 3.0
 
 
 @pytest.mark.rostest
@@ -120,16 +117,14 @@ class SiplCameraMonoTest(IsaacROSBaseTest):
                 img.header.stamp, info.header.stamp,
                 'Image and camera_info timestamps do not match')
             self.assertEqual(
-                img.encoding, EXPECTED_SUBSCRIBER_ENCODING,
-                f'Expected encoding {EXPECTED_SUBSCRIBER_ENCODING}, got {img.encoding}')
-            min_step = int(img.width * RGB8_BYTES_PER_PIXEL)
+                img.encoding, ENCODING_DESIRED,
+                f'Expected encoding {ENCODING_DESIRED}, got {img.encoding}')
             self.assertGreaterEqual(
-                img.step, min_step,
-                f'Image step ({img.step}) must be >= '
-                f'width * bytes_per_pixel ({min_step})')
+                img.step, img.width,
+                f'Image step ({img.step}) must be >= width ({img.width})')
 
-            rgb8_min_size = int(img.width * img.height * RGB8_BYTES_PER_PIXEL)
+            nv12_min_size = img.step * img.height * 3 // 2
             self.assertGreaterEqual(
-                len(img.data), rgb8_min_size,
-                f'Data size {len(img.data)} is smaller than RGB8 minimum '
-                f'({rgb8_min_size}) for {img.width}x{img.height}')
+                len(img.data), nv12_min_size,
+                f'Data size {len(img.data)} is smaller than NV12 minimum '
+                f'({nv12_min_size}) for {img.width}x{img.height}')

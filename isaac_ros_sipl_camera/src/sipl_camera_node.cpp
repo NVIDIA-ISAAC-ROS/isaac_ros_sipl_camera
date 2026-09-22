@@ -30,7 +30,8 @@
 #include <variant>
 #include <vector>
 
-#include "tf2/LinearMath/Quaternion.h"
+#include "cuda_buffer/cuda_buffer_api.hpp"
+#include "tf2/LinearMath/Quaternion.hpp"
 
 using namespace std::chrono_literals;
 
@@ -116,8 +117,6 @@ SiplCameraNode::SiplCameraNode(const rclcpp::NodeOptions & options, bool /*defer
   // module.
   nito_file_ = declare_parameter<std::string>("nito_file", "");
 
-  output_buffer_pool_size_ = declare_parameter<int>("output_buffer_pool_size", 10);
-
   // Max time to wait for each sensor's first frame after capture starts before
   // timeout. 0 disables the check.
   first_frame_timeout_s_ = declare_parameter<double>("first_frame_timeout_s", 5.0);
@@ -171,8 +170,6 @@ SiplCameraNode::SiplCameraNode(const rclcpp::NodeOptions & options, bool /*defer
 
   // Create TF broadcaster
   tf_static_broadcaster_ = std::make_unique<tf2_ros::StaticTransformBroadcaster>(this);
-
-  cuda_stream_ = ::nvidia::isaac_ros::common::createCudaStream("SiplCameraNode");
 
   if (enable_debug_logs_) {
     nvsipl::INvSIPLTrace::GetInstance()->SetLevel(nvsipl::INvSIPLTrace::TraceLevel::LevelDebug);
@@ -237,7 +234,8 @@ void SiplCameraNode::setupSiplCamera(size_t num_sensors)
   RCLCPP_INFO(get_logger(), "  Parsing SIPL database...");
   nvsipl::SIPLStatus status = sipl_query_->ParseDatabase();
   if (status != nvsipl::NVSIPL_STATUS_OK) {
-    RCLCPP_FATAL(get_logger(), "  ParseDatabase failed with status: %u",
+    RCLCPP_FATAL(
+      get_logger(), "  ParseDatabase failed with status: %u",
       static_cast<uint32_t>(status));
     throw std::runtime_error("Failed to parse SIPL database");
   }
@@ -245,7 +243,8 @@ void SiplCameraNode::setupSiplCamera(size_t num_sensors)
   RCLCPP_INFO(get_logger(), "  Getting sensor system config for: %s", platform_config_.c_str());
   status = sipl_query_->GetSensorSystemConfig(platform_config_, sensor_system_config_);
   if (status != nvsipl::NVSIPL_STATUS_OK) {
-    RCLCPP_FATAL(get_logger(),
+    RCLCPP_FATAL(
+      get_logger(),
       "  GetSensorSystemConfig failed with status: %u for platform: %s",
       static_cast<uint32_t>(status), platform_config_.c_str());
     throw std::runtime_error("Sensor system config not found");
@@ -270,7 +269,8 @@ void SiplCameraNode::setupSiplCamera(size_t num_sensors)
     platform_config_.c_str(), sensor_system_config_.modules.size());
   for (size_t mi = 0; mi < sensor_system_config_.modules.size(); ++mi) {
     const auto & m = sensor_system_config_.modules[mi];
-    RCLCPP_INFO(get_logger(), "    Module[%zu]: name=%s transportId=%u",
+    RCLCPP_INFO(
+      get_logger(), "    Module[%zu]: name=%s transportId=%u",
       mi, m.name.c_str(), m.transportId);
   }
 
@@ -295,10 +295,10 @@ void SiplCameraNode::setupSiplCamera(size_t num_sensors)
   }
   if (available_sensors < num_sensors) {
     throw std::runtime_error(
-      "Platform config '" + platform_config_ + "' exposes " +
-      std::to_string(available_sensors) + " sensor(s) but " +
-      std::to_string(num_sensors) + " sensor(s) were requested; check that the "
-      "platform config matches the camera setup");
+            "Platform config '" + platform_config_ + "' exposes " +
+            std::to_string(available_sensors) + " sensor(s) but " +
+            std::to_string(num_sensors) + " sensor(s) were requested; check that the "
+            "platform config matches the camera setup");
   }
 
   // Drop trailing modules SIPL would otherwise expect us to register. For example
@@ -329,7 +329,8 @@ void SiplCameraNode::setupSiplCamera(size_t num_sensors)
 
   status = sipl_camera_->SetPlatformCfg(sensor_system_config_);
   if (status != nvsipl::NVSIPL_STATUS_OK) {
-    RCLCPP_FATAL(get_logger(), "  SetPlatformCfg failed with status: %u",
+    RCLCPP_FATAL(
+      get_logger(), "  SetPlatformCfg failed with status: %u",
       static_cast<uint32_t>(status));
     throw std::runtime_error("Failed to set platform configuration");
   }
@@ -360,7 +361,7 @@ SiplCameraNode::getSensorConfig(uint32_t sensor_id) const
     }
   }
   throw std::runtime_error(
-    "getSensorConfig: no sensor with id=" + std::to_string(sensor_id));
+          "getSensorConfig: no sensor with id=" + std::to_string(sensor_id));
 }
 
 std::vector<SiplCameraNode::PipelineDescriptor> SiplCameraNode::describePipelines()
@@ -380,10 +381,10 @@ SiplCameraNode::resolvePipelineDescriptors(std::vector<PipelineDescriptor> reque
     transport_adapter_->selectSensors(sensor_system_config_, stereo);
   if (sensor_ids.size() != requested_descriptors.size()) {
     throw std::runtime_error(
-      "Requested " + std::to_string(requested_descriptors.size()) +
-      " SIPL pipeline(s), but platform_config '" + platform_config_ +
-      "' produced " + std::to_string(sensor_ids.size()) +
-      " usable sensor selection(s)");
+            "Requested " + std::to_string(requested_descriptors.size()) +
+            " SIPL pipeline(s), but platform_config '" + platform_config_ +
+            "' produced " + std::to_string(sensor_ids.size()) +
+            " usable sensor selection(s)");
   }
 
   for (size_t i = 0; i < requested_descriptors.size(); ++i) {
@@ -427,16 +428,19 @@ void SiplCameraNode::initialize(std::vector<PipelineDescriptor> descriptors)
     // PipelineDescriptor.sensor_id is the SIPL global sensor id (resolved by
     // the transport adapter's selectSensors()).
     pipeline.sensor_id = pipeline.desc.sensor_id;
+    pipeline.cuda_stream = ::nvidia::isaac_ros::common::createCudaStream(
+      std::string("SiplCameraNode:") + pipeline.desc.display_name());
 
-    RCLCPP_INFO(get_logger(), "[%s] Configuring pipeline (sensor_id=%u)",
+    RCLCPP_INFO(
+      get_logger(), "[%s] Configuring pipeline (sensor_id=%u)",
       pipeline.desc.display_name(), pipeline.sensor_id);
 
     auto status = sipl_camera_->SetPipelineCfg(
       pipeline.sensor_id, pipeline_cfg, pipeline.queues);
     if (status != nvsipl::NVSIPL_STATUS_OK) {
       throw std::runtime_error(
-        "Failed to set pipeline configuration for sensor " +
-        std::to_string(pipeline.sensor_id));
+              "Failed to set pipeline configuration for sensor " +
+              std::to_string(pipeline.sensor_id));
     }
   }
 
@@ -454,18 +458,19 @@ void SiplCameraNode::initialize(std::vector<PipelineDescriptor> descriptors)
   if (align_stereo_timestamps_) {
     if (pipelines_.size() != 2) {
       throw std::runtime_error(
-        "align_stereo_timestamps requires exactly 2 pipelines (stereo); got " +
-        std::to_string(pipelines_.size()));
+              "align_stereo_timestamps requires exactly 2 pipelines (stereo); got " +
+              std::to_string(pipelines_.size()));
     }
     if (!use_hw_timestamp_) {
       throw std::runtime_error(
-        "align_stereo_timestamps requires use_hw_timestamp:=true (raw TSC tick domain)");
+              "align_stereo_timestamps requires use_hw_timestamp:=true (raw TSC tick domain)");
     }
     const int64_t max_diff_ns = static_cast<int64_t>(max_timestamp_diff_us_ * 1000.0 + 0.5);
     const int64_t half_period_ns = static_cast<int64_t>(0.5e9 / expected_fps_ + 0.5);
     stereo_timestamp_aligner_ = std::make_unique<StereoTimestampAligner>(
       max_diff_ns, half_period_ns);
-    RCLCPP_INFO(get_logger(),
+    RCLCPP_INFO(
+      get_logger(),
       "Stereo timestamp alignment enabled: max_diff=%.1f us, half_period=%.2f ms",
       max_timestamp_diff_us_, half_period_ns / 1.0e6);
   }
@@ -484,7 +489,8 @@ void SiplCameraNode::initialize(std::vector<PipelineDescriptor> descriptors)
     RCLCPP_FATAL(get_logger(), "Failed to open NvSciBuf module: %d", sci_err);
     throw std::runtime_error("NvSciBuf module initialization failed");
   }
-  sci_buf_module_.reset(module_handle, [](NvSciBufModuleRec * p) {
+  sci_buf_module_.reset(
+    module_handle, [](NvSciBufModuleRec * p) {
       if (p) {
         NvSciBufModuleClose(p);
       }
@@ -500,7 +506,8 @@ void SiplCameraNode::initialize(std::vector<PipelineDescriptor> descriptors)
   // Init(); RegisterImages and RegisterAutoControlPlugin must run after.
   // Out-of-order calls return NVSIPL_STATUS_INVALID_STATE (status 6).
   for (auto & pipeline : pipelines_) {
-    RCLCPP_INFO(get_logger(), "[%s] Allocating buffers...",
+    RCLCPP_INFO(
+      get_logger(), "[%s] Allocating buffers...",
       pipeline.desc.display_name());
     allocateBuffersForPipeline(pipeline);
 
@@ -526,14 +533,15 @@ void SiplCameraNode::initialize(std::vector<PipelineDescriptor> descriptors)
     auto attr_status = pipeline.buffer_manager_isp0->queryAllocatedBufferAttributes(init_attrs);
     if (attr_status != nvsipl::NVSIPL_STATUS_OK || init_attrs.plane_count < 2) {
       throw std::runtime_error(
-        "[" + std::string(pipeline.desc.display_name()) +
-        "] Failed to query reconciled ISP0 buffer attributes; cannot size compact pool");
+              "[" + std::string(pipeline.desc.display_name()) +
+              "] Failed to query reconciled ISP0 buffer attributes; cannot size compact pool");
     }
 
     const size_t y_end =
       static_cast<size_t>(init_attrs.plane_pitches[0]) * init_attrs.plane_heights[0];
     pipeline.needs_compaction = (init_attrs.plane_offsets[1] != y_end);
-    RCLCPP_DEBUG(get_logger(),
+    RCLCPP_DEBUG(
+      get_logger(),
       "[%s] ISP0 buffer layout: Y ends at %zu, UV starts at %" PRIu64 " — %s",
       pipeline.desc.display_name(), y_end, init_attrs.plane_offsets[1],
       pipeline.needs_compaction ? "compaction required" : "already compact");
@@ -547,18 +555,21 @@ void SiplCameraNode::initialize(std::vector<PipelineDescriptor> descriptors)
 
   auto status = sipl_camera_->Init();
   if (status != nvsipl::NVSIPL_STATUS_OK) {
-    RCLCPP_FATAL(get_logger(), "SIPL Init() failed with status: %u",
+    RCLCPP_FATAL(
+      get_logger(), "SIPL Init() failed with status: %u",
       static_cast<uint32_t>(status));
     throw std::runtime_error("Failed to initialize SIPL camera");
   }
 
   // Register all sensors' buffers + sync before any AC plugin is registered on the primary call.
   for (auto & pipeline : pipelines_) {
-    RCLCPP_INFO(get_logger(), "[%s] Registering buffers + sync...",
+    RCLCPP_INFO(
+      get_logger(), "[%s] Registering buffers + sync...",
       pipeline.desc.display_name());
     registerBuffersForPipeline(pipeline);
 
-    RCLCPP_INFO(get_logger(), "[%s] Creating publishers...",
+    RCLCPP_INFO(
+      get_logger(), "[%s] Creating publishers...",
       pipeline.desc.display_name());
     createPublisherForPipeline(pipeline);
   }
@@ -569,17 +580,17 @@ void SiplCameraNode::initialize(std::vector<PipelineDescriptor> descriptors)
   for (auto & pipeline : pipelines_) {
     const auto & sensor = getSensorConfig(pipeline.sensor_id);
     if (sensor.sensorGroup > 0U && sensor.deviceIndex != 0U) {
-      RCLCPP_INFO(get_logger(),
+      RCLCPP_INFO(
+        get_logger(),
         "[%s] Skipping AC plugin for secondary sensor %u of group %u",
         pipeline.desc.display_name(), pipeline.sensor_id, sensor.sensorGroup);
       continue;
     }
-    RCLCPP_INFO(get_logger(), "[%s] Registering Auto Control Plugin (sensor %u)",
+    RCLCPP_INFO(
+      get_logger(), "[%s] Registering Auto Control Plugin (sensor %u)",
       pipeline.desc.display_name(), pipeline.sensor_id);
     registerAutoControlPlugin(pipeline.sensor_id);
   }
-
-  allocateCompactPools();
 
   RCLCPP_INFO(get_logger(), "Starting capture...");
   startAllPipelines();
@@ -604,8 +615,8 @@ void SiplCameraNode::allocateBuffersForPipeline(CameraPipeline & pipeline)
     nvsipl::INvSIPLClient::ConsumerDesc::OutputType::ICP);
   if (status != nvsipl::NVSIPL_STATUS_OK) {
     throw std::runtime_error(
-      "[" + std::string(pipeline.desc.display_name()) +
-      "] Failed to allocate ICP buffers");
+            "[" + std::string(pipeline.desc.display_name()) +
+            "] Failed to allocate ICP buffers");
   }
 
   pipeline.buffer_manager_isp0 = std::make_shared<SiplBufferManager>(
@@ -623,8 +634,8 @@ void SiplCameraNode::allocateBuffersForPipeline(CameraPipeline & pipeline)
     sample_type);
   if (status != nvsipl::NVSIPL_STATUS_OK) {
     throw std::runtime_error(
-      "[" + std::string(pipeline.desc.display_name()) +
-      "] Failed to allocate ISP0 buffers");
+            "[" + std::string(pipeline.desc.display_name()) +
+            "] Failed to allocate ISP0 buffers");
   }
 
   RCLCPP_INFO(
@@ -643,8 +654,8 @@ void SiplCameraNode::registerBuffersForPipeline(CameraPipeline & pipeline)
     nvsipl::INvSIPLClient::ConsumerDesc::OutputType::ICP);
   if (status != nvsipl::NVSIPL_STATUS_OK) {
     throw std::runtime_error(
-      "[" + std::string(pipeline.desc.display_name()) +
-      "] Failed to register ICP buffers");
+            "[" + std::string(pipeline.desc.display_name()) +
+            "] Failed to register ICP buffers");
   }
 
   status = pipeline.buffer_manager_isp0->registerBuffers(
@@ -653,11 +664,12 @@ void SiplCameraNode::registerBuffersForPipeline(CameraPipeline & pipeline)
     nvsipl::INvSIPLClient::ConsumerDesc::OutputType::ISP0);
   if (status != nvsipl::NVSIPL_STATUS_OK) {
     throw std::runtime_error(
-      "[" + std::string(pipeline.desc.display_name()) +
-      "] Failed to register ISP0 buffers");
+            "[" + std::string(pipeline.desc.display_name()) +
+            "] Failed to register ISP0 buffers");
   }
 
-  allocateSync(pipeline.sensor_id,
+  allocateSync(
+    pipeline.sensor_id,
     nvsipl::INvSIPLClient::ConsumerDesc::OutputType::ISP0,
     pipeline.sci_sync_isp0);
 }
@@ -670,9 +682,10 @@ void SiplCameraNode::createPublisherForPipeline(CameraPipeline & pipeline)
 
   rclcpp::PublisherOptions pub_options;
   pub_options.use_intra_process_comm = rclcpp::IntraProcessSetting::Enable;
-  pipeline.image_pub = create_publisher<nvidia::isaac_ros::nitros::NitrosImage>(
+  pipeline.image_pub = create_publisher<sensor_msgs::msg::Image>(
     image_topic, output_qos_, pub_options);
-  RCLCPP_DEBUG(get_logger(), "[%s] Publisher QoS: depth=%zu, reliability=%s",
+  RCLCPP_DEBUG(
+    get_logger(), "[%s] Publisher QoS: depth=%zu, reliability=%s",
     pipeline.desc.display_name(), output_qos_.get_rmw_qos_profile().depth,
     output_qos_.get_rmw_qos_profile().reliability == RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT ?
     "best_effort" : "reliable");
@@ -717,14 +730,6 @@ void SiplCameraNode::stopAllPipelines()
     if (pipeline.event_thread.joinable()) {
       pipeline.event_thread.join();
     }
-  }
-
-  for (const auto & pipeline : pipelines_) {
-    RCLCPP_INFO(
-      get_logger(),
-      "[%s] Pool exhaustion drops=%" PRIu64,
-      pipeline.desc.display_name(),
-      pipeline.dropped_pool_exhausted);
   }
 
   if (sipl_camera_) {
@@ -835,17 +840,19 @@ void SiplCameraNode::registerAutoControlPlugin(uint32_t sensor_id)
     throw std::runtime_error("Failed to load NITO file");
   }
 
-  auto status = sipl_camera_->RegisterAutoControlPlugin(sensor_id, nvsipl::NV_PLUGIN, nullptr,
-        nito_blob);
+  auto status = sipl_camera_->RegisterAutoControlPlugin(
+    sensor_id, nvsipl::NV_PLUGIN, nullptr,
+    nito_blob);
   if (status != nvsipl::NVSIPL_STATUS_OK) {
-    RCLCPP_FATAL(get_logger(),
+    RCLCPP_FATAL(
+      get_logger(),
       "RegisterAutoControlPlugin failed for sensor %u (nito_file='%s', "
       "nito_size=%zu) with SIPL status %u",
       sensor_id, nito_file_.c_str(), nito_blob.size(),
       static_cast<uint32_t>(status));
     throw std::runtime_error(
-      "Failed to register autocontrol plugin (status " +
-      std::to_string(static_cast<uint32_t>(status)) + ")");
+            "Failed to register autocontrol plugin (status " +
+            std::to_string(static_cast<uint32_t>(status)) + ")");
   }
 
   RCLCPP_INFO(
@@ -856,7 +863,8 @@ void SiplCameraNode::registerAutoControlPlugin(uint32_t sensor_id)
 
 void SiplCameraNode::pipelineThread(CameraPipeline & pipeline)
 {
-  RCLCPP_INFO(get_logger(), "[%s] Pipeline thread started (sensor %u)",
+  RCLCPP_INFO(
+    get_logger(), "[%s] Pipeline thread started (sensor %u)",
     pipeline.desc.display_name(), pipeline.sensor_id);
 
   auto last_frame_time = std::chrono::steady_clock::now();
@@ -871,13 +879,15 @@ void SiplCameraNode::pipelineThread(CameraPipeline & pipeline)
       const double waited_s = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - capture_start).count();
       if (waited_s > first_frame_timeout_s_) {
-        RCLCPP_FATAL(get_logger(),
+        RCLCPP_FATAL(
+          get_logger(),
           "[%s] No frames from sensor %u within %.1fs. Verify the camera connection.",
           pipeline.desc.display_name(), pipeline.sensor_id, first_frame_timeout_s_);
         // All pipeline threads run this watchdog so only the first to fire
         // logs a node-level log and triggers shutdown so the failing sensor is known.
         if (!first_frame_timeout_reported_.exchange(true)) {
-          RCLCPP_FATAL(get_logger(),
+          RCLCPP_FATAL(
+            get_logger(),
             "Shutting down node: sensor %u (%s) produced no frames within %.1fs.",
             pipeline.sensor_id, pipeline.desc.display_name(), first_frame_timeout_s_);
           rclcpp::shutdown();
@@ -887,12 +897,14 @@ void SiplCameraNode::pipelineThread(CameraPipeline & pipeline)
     }
 
     if (!pipeline.queues.captureCompletionQueue) {
-      RCLCPP_ERROR(get_logger(), "[%s] Capture completion queue is null",
+      RCLCPP_ERROR(
+        get_logger(), "[%s] Capture completion queue is null",
         pipeline.desc.display_name());
       break;
     }
     if (!pipeline.queues.isp0CompletionQueue) {
-      RCLCPP_ERROR(get_logger(), "[%s] ISP0 completion queue is null",
+      RCLCPP_ERROR(
+        get_logger(), "[%s] ISP0 completion queue is null",
         pipeline.desc.display_name());
       break;
     }
@@ -900,16 +912,19 @@ void SiplCameraNode::pipelineThread(CameraPipeline & pipeline)
     // We must wait and read the raw frame even when we do not use it before we can
     // get the ISP0 buffer. Get buffer from ICP completion queue.
     nvsipl::INvSIPLClient::INvSIPLBuffer * buffer_raw = nullptr;
-    auto status = pipeline.queues.captureCompletionQueue->Get(buffer_raw,
+    auto status = pipeline.queues.captureCompletionQueue->Get(
+      buffer_raw,
       SiplCameraNode::kSiplQueueGetTimeoutUs);
     if (status != nvsipl::NVSIPL_STATUS_OK) {
       if (status == nvsipl::NVSIPL_STATUS_TIMED_OUT) {
-        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 1000,
           "[%s] Timeout getting RAW buffer",
           pipeline.desc.display_name());
         continue;
       }
-      RCLCPP_ERROR(get_logger(), "[%s] Failed to get RAW buffer (status=%d)",
+      RCLCPP_ERROR(
+        get_logger(), "[%s] Failed to get RAW buffer (status=%d)",
         pipeline.desc.display_name(), static_cast<int>(status));
       continue;
     }
@@ -937,7 +952,8 @@ void SiplCameraNode::pipelineThread(CameraPipeline & pipeline)
           now - last_frame_time).count();
         if (elapsed_us > 0) {
           double fps = 1000000.0 / static_cast<double>(elapsed_us);
-          RCLCPP_DEBUG(get_logger(), "[%s] Instantaneous FPS: %.2f",
+          RCLCPP_DEBUG(
+            get_logger(), "[%s] Instantaneous FPS: %.2f",
             pipeline.desc.display_name(), fps);
         }
         last_frame_time = now;
@@ -948,12 +964,14 @@ void SiplCameraNode::pipelineThread(CameraPipeline & pipeline)
         try {
           processFrame(nvmm_buffer, pipeline, isp0_start_time);
         } catch (const std::exception & e) {
-          RCLCPP_ERROR(get_logger(), "[%s] Frame processing failed: %s",
+          RCLCPP_ERROR(
+            get_logger(), "[%s] Frame processing failed: %s",
             pipeline.desc.display_name(), e.what());
           buffer->Release();
         }
       } else {
-        RCLCPP_ERROR(get_logger(),
+        RCLCPP_ERROR(
+          get_logger(),
           "[%s] dynamic_cast to INvSIPLNvMBuffer failed for buffer %p",
           pipeline.desc.display_name(), static_cast<void *>(buffer));
         buffer->Release();
@@ -961,20 +979,24 @@ void SiplCameraNode::pipelineThread(CameraPipeline & pipeline)
 
       size_t queue_depth = pipeline.queues.isp0CompletionQueue->GetCount();
       if (queue_depth > 1) {
-        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 1000,
           "[%s] ISP0 queue depth high (%zu). Possible backlog.",
           pipeline.desc.display_name(), queue_depth);
       }
     } else if (status == nvsipl::NVSIPL_STATUS_TIMED_OUT) {
-      RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 1000,
+      RCLCPP_DEBUG_THROTTLE(
+        get_logger(), *get_clock(), 1000,
         "[%s] Waiting for frames (queue timeout, no data from sensor)",
         pipeline.desc.display_name());
     } else if (status == nvsipl::NVSIPL_STATUS_EOF) {
-      RCLCPP_INFO(get_logger(), "[%s] ISP0 queue EOF received",
+      RCLCPP_INFO(
+        get_logger(), "[%s] ISP0 queue EOF received",
         pipeline.desc.display_name());
       break;
     } else {
-      RCLCPP_WARN(get_logger(), "[%s] Failed to get ISP0 buffer (status=%u)",
+      RCLCPP_WARN(
+        get_logger(), "[%s] Failed to get ISP0 buffer (status=%u)",
         pipeline.desc.display_name(), static_cast<uint32_t>(status));
     }
   }
@@ -990,7 +1012,8 @@ void SiplCameraNode::handleNotificationQueue(CameraPipeline & pipeline)
 
   while (rclcpp::ok() && !stop_capture_) {
     if (!pipeline.queues.notificationQueue) {
-      RCLCPP_ERROR(get_logger(), "[%s] Notification queue is null",
+      RCLCPP_ERROR(
+        get_logger(), "[%s] Notification queue is null",
         pipeline.desc.display_name());
       break;
     }
@@ -1003,7 +1026,8 @@ void SiplCameraNode::handleNotificationQueue(CameraPipeline & pipeline)
     } else if (status == nvsipl::NVSIPL_STATUS_TIMED_OUT) {
       // Timeout is normal
     } else if (status == nvsipl::NVSIPL_STATUS_EOF) {
-      RCLCPP_INFO(get_logger(), "[%s] Notification queue EOF received",
+      RCLCPP_INFO(
+        get_logger(), "[%s] Notification queue EOF received",
         pipeline.desc.display_name());
       break;
     } else {
@@ -1083,7 +1107,8 @@ bool SiplCameraNode::validateBufferFormat(
 
   if (enable_debug_logs_) {
     for (uint32_t i = 0; i < attrs.plane_count; ++i) {
-      RCLCPP_DEBUG(get_logger(),
+      RCLCPP_DEBUG(
+        get_logger(),
         "Plane %u: width=%u, height=%u, pitch=%u, "
         "offset=%" PRIu64 ", bpp=%u",
         i, attrs.plane_widths[i], attrs.plane_heights[i], attrs.plane_pitches[i],
@@ -1154,7 +1179,8 @@ void SiplCameraNode::processFrame(
   if (enable_debug_logs_) {
     auto handoff_us = std::chrono::duration_cast<std::chrono::microseconds>(
       process_start - isp0_start_time).count();
-    RCLCPP_DEBUG(get_logger(),
+    RCLCPP_DEBUG(
+      get_logger(),
       "[Process] [%s] Time from ISP start to processFrame entry: %ld us",
       pipeline.desc.display_name(), handoff_us);
   }
@@ -1182,7 +1208,8 @@ void SiplCameraNode::processFrame(
     sipl_buffer, fence, cpu_wait_context_, &gpu_ptr, &gpu_size, &attrs);
 
   if (status != nvsipl::NVSIPL_STATUS_OK || gpu_ptr == nullptr || gpu_size == 0U) {
-    RCLCPP_ERROR(get_logger(), "[%s] Failed to map NVMM to CUDA",
+    RCLCPP_ERROR(
+      get_logger(), "[%s] Failed to map NVMM to CUDA",
       pipeline.desc.display_name());
     sipl_buffer->Release();
     return;
@@ -1197,7 +1224,8 @@ void SiplCameraNode::processFrame(
     auto isp_fence_done = std::chrono::steady_clock::now();
     auto isp_latency_us = std::chrono::duration_cast<std::chrono::microseconds>(
       isp_fence_done - isp0_start_time).count();
-    RCLCPP_DEBUG(get_logger(),
+    RCLCPP_DEBUG(
+      get_logger(),
       "[Process] [%s] ISP start to frame ready and cpu sync'ed latency: %ld us",
       pipeline.desc.display_name(), isp_latency_us);
   }
@@ -1229,7 +1257,8 @@ void SiplCameraNode::processFrame(
       stamp_ns = r.ns;
       if (r.desync) {
         const uint64_t desync_count = ++stereo_desync_count_;
-        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 1000,
           "[%s] stereo frame out of sync (> %.0f us): %" PRIu64 " total; publishing "
           "unaligned timestamp (gated downstream consumers drop this pair)",
           pipeline.desc.display_name(), max_timestamp_diff_us_, desync_count);
@@ -1249,63 +1278,60 @@ void SiplCameraNode::processFrame(
   const size_t uv_size = static_cast<size_t>(attrs.plane_pitches[1]) * attrs.plane_heights[1];
   const size_t compact_size = y_size + uv_size;
 
-  if (compact_size > pipeline.compact_pool->block_size()) {
-    RCLCPP_ERROR(get_logger(),
-      "[%s] Compact frame size %zu exceeds pool block size %zu — "
-      "resolution or format changed after initialization",
-      pipeline.desc.display_name(), compact_size, pipeline.compact_pool->block_size());
-    sipl_buffer->Release();
-    return;
-  }
-
   const bool published = publishFrame(
     pipeline, header, attrs.plane_pitches[0],
     [&](uint8_t * compact_ptr, size_t /*block_size*/) -> bool {
       cudaError_t cuda_err;
       if (pipeline.needs_compaction) {
         // Copy Y the UV planes into the compact buffer.
-        cuda_err = cudaMemcpyAsync(compact_ptr, gpu_ptr, y_size,
-          cudaMemcpyDeviceToDevice, *cuda_stream_);
+        cuda_err = cudaMemcpyAsync(
+          compact_ptr, gpu_ptr, y_size,
+          cudaMemcpyDeviceToDevice, *pipeline.cuda_stream);
         if (cuda_err != cudaSuccess) {
-          RCLCPP_ERROR(get_logger(), "[%s] Y plane copy failed: %s",
+          RCLCPP_ERROR(
+            get_logger(), "[%s] Y plane copy failed: %s",
             pipeline.desc.display_name(), cudaGetErrorString(cuda_err));
           return false;
         }
         cuda_err = cudaMemcpyAsync(
           compact_ptr + y_size,
           static_cast<const uint8_t *>(gpu_ptr) + attrs.plane_offsets[1],
-          uv_size, cudaMemcpyDeviceToDevice, *cuda_stream_);
+          uv_size, cudaMemcpyDeviceToDevice, *pipeline.cuda_stream);
         if (cuda_err != cudaSuccess) {
-          RCLCPP_ERROR(get_logger(), "[%s] UV plane copy failed: %s",
+          RCLCPP_ERROR(
+            get_logger(), "[%s] UV plane copy failed: %s",
             pipeline.desc.display_name(), cudaGetErrorString(cuda_err));
           return false;
         }
       } else {
-        cuda_err = cudaMemcpyAsync(compact_ptr, gpu_ptr, compact_size,
-          cudaMemcpyDeviceToDevice, *cuda_stream_);
+        cuda_err = cudaMemcpyAsync(
+          compact_ptr, gpu_ptr, compact_size,
+          cudaMemcpyDeviceToDevice, *pipeline.cuda_stream);
         if (cuda_err != cudaSuccess) {
-          RCLCPP_ERROR(get_logger(), "[%s] Frame copy failed: %s",
+          RCLCPP_ERROR(
+            get_logger(), "[%s] Frame copy failed: %s",
             pipeline.desc.display_name(), cudaGetErrorString(cuda_err));
           return false;
         }
       }
-      cuda_err = cudaStreamSynchronize(*cuda_stream_);
-      if (cuda_err != cudaSuccess) {
-        RCLCPP_ERROR(get_logger(), "[%s] cudaStreamSynchronize failed: %s",
-          pipeline.desc.display_name(), cudaGetErrorString(cuda_err));
-        return false;
-      }
       return true;
     });
 
-  // We no longer need the source buffer after copying to the compact buffer.
+  const cudaError_t copy_error = cudaStreamSynchronize(*pipeline.cuda_stream);
   sipl_buffer->Release();
+  if (copy_error != cudaSuccess) {
+    RCLCPP_ERROR(
+      get_logger(), "[%s] cudaStreamSynchronize failed: %s",
+      pipeline.desc.display_name(), cudaGetErrorString(copy_error));
+    return;
+  }
 
   if (!published) {
     return;
   }
 
-  RCLCPP_DEBUG(get_logger(),
+  RCLCPP_DEBUG(
+    get_logger(),
     "[Process] [%s] Compacted %s: Y %u×%u + UV %u×%u, "
     "gap removed %lu bytes, compact %zu bytes",
     pipeline.desc.display_name(), encoding_desired_.c_str(),
@@ -1325,7 +1351,8 @@ void SiplCameraNode::processFrame(
       latency_us = (now_ros.nanoseconds() - capture_timestamp.nanoseconds()) / 1000;
     }
 
-    RCLCPP_DEBUG(get_logger(),
+    RCLCPP_DEBUG(
+      get_logger(),
       "[Process] [%s] image_size=%zu, "
       "process_duration=%ld us, capture_to_publish_latency=%ld us, "
       "raw_tsc=%" PRIu64 ", now_ros=%" PRId64,
@@ -1468,7 +1495,8 @@ std::vector<uint8_t> SiplCameraNode::loadNitoFile(const std::string & path)
   fclose(fp);
 
   if (result != static_cast<size_t>(fsize)) {
-    RCLCPP_ERROR(get_logger(), "Failed to read NITO file (read %zu of %" PRId64 " bytes)",
+    RCLCPP_ERROR(
+      get_logger(), "Failed to read NITO file (read %zu of %" PRId64 " bytes)",
       result, fsize);
     return {};
   }
@@ -1484,13 +1512,15 @@ void SiplCameraNode::handlePipelineNotification(
 
   switch (event.eNotifType) {
     case NotifType::NOTIF_INFO_ICP_PROCESSING_DONE:
-      RCLCPP_DEBUG(get_logger(), "[Sipl Notification] ICP processing done on sensor %u",
-          event.uIndex);
+      RCLCPP_DEBUG(
+        get_logger(), "[Sipl Notification] ICP processing done on sensor %u",
+        event.uIndex);
       break;
     case NotifType::NOTIF_WARN_ICP_FRAME_DROP:
-      RCLCPP_WARN(get_logger(),
-          "[Sipl Notification] ICP Frame drop detected on sensor %u (pipeline full?)",
-          event.uIndex);
+      RCLCPP_WARN(
+        get_logger(),
+        "[Sipl Notification] ICP Frame drop detected on sensor %u (pipeline full?)",
+        event.uIndex);
       break;
     case NotifType::NOTIF_WARN_ICP_FRAME_DISCONTINUITY:
       RCLCPP_WARN(
@@ -1507,90 +1537,109 @@ void SiplCameraNode::handlePipelineNotification(
       RCLCPP_ERROR(get_logger(), "[Sipl Notification] Capture failure on sensor %u", event.uIndex);
       break;
     case NotifType::NOTIF_ERROR_ICP_EMB_DATA_PARSE_FAILURE:
-      RCLCPP_ERROR(get_logger(), "[Sipl Notification] Embedded data parse failure on sensor %u",
-          event.uIndex);
+      RCLCPP_ERROR(
+        get_logger(), "[Sipl Notification] Embedded data parse failure on sensor %u",
+        event.uIndex);
       break;
     case NotifType::NOTIF_ERROR_ISP_PROCESSING_FAILURE:
-      RCLCPP_ERROR(get_logger(), "[Sipl Notification] ISP processing failure on sensor %u",
-          event.uIndex);
+      RCLCPP_ERROR(
+        get_logger(), "[Sipl Notification] ISP processing failure on sensor %u",
+        event.uIndex);
       break;
     case NotifType::NOTIF_ERROR_INTERNAL_FAILURE:
       RCLCPP_ERROR(get_logger(), "[Sipl Notification] Internal failure on sensor %u", event.uIndex);
       break;
     case NotifType::NOTIF_ERROR_ACP_PROCESSING_FAILURE:
-      RCLCPP_ERROR(get_logger(), "[Sipl Notification] Auto control processing failure on sensor %u",
-          event.uIndex);
+      RCLCPP_ERROR(
+        get_logger(), "[Sipl Notification] Auto control processing failure on sensor %u",
+        event.uIndex);
       break;
     case NotifType::NOTIF_ERROR_CDI_SET_SENSOR_CTRL_FAILURE:
-      RCLCPP_ERROR(get_logger(), "[Sipl Notification] Sensor control write failure on sensor %u",
-          event.uIndex);
+      RCLCPP_ERROR(
+        get_logger(), "[Sipl Notification] Sensor control write failure on sensor %u",
+        event.uIndex);
       break;
     case NotifType::NOTIF_ERROR_ICP_BAD_INPUT_STREAM:
-      RCLCPP_ERROR(get_logger(),
+      RCLCPP_ERROR(
+        get_logger(),
         "[Sipl Notification] ICP bad input stream on sensor %u", event.uIndex);
       break;
     case NotifType::NOTIF_ERROR_DESERIALIZER_FAILURE:
-      RCLCPP_ERROR(get_logger(),
+      RCLCPP_ERROR(
+        get_logger(),
         "[Sipl Notification] Deserializer failure on sensor %u", event.uIndex);
       break;
     case NotifType::NOTIF_ERROR_SERIALIZER_FAILURE:
-      RCLCPP_ERROR(get_logger(),
+      RCLCPP_ERROR(
+        get_logger(),
         "[Sipl Notification] Serializer failure on sensor %u", event.uIndex);
       break;
     case NotifType::NOTIF_ERROR_SENSOR_FAILURE:
-      RCLCPP_ERROR(get_logger(),
+      RCLCPP_ERROR(
+        get_logger(),
         "[Sipl Notification] Sensor failure on sensor %u", event.uIndex);
       break;
     case NotifType::NOTIF_ERROR_ISP_PROCESSING_FAILURE_RECOVERABLE:
-      RCLCPP_WARN(get_logger(),
+      RCLCPP_WARN(
+        get_logger(),
         "[Sipl Notification] Recoverable ISP processing failure on sensor %u",
         event.uIndex);
       break;
     case NotifType::NOTIF_ERROR_ICP_AUTH_FAILURE:
-      RCLCPP_ERROR(get_logger(),
+      RCLCPP_ERROR(
+        get_logger(),
         "[Sipl Notification] ICP authentication failure on sensor %u",
         event.uIndex);
       break;
     case NotifType::NOTIF_ERROR_ICP_AUTH_OUT_OF_ORDER:
-      RCLCPP_ERROR(get_logger(),
+      RCLCPP_ERROR(
+        get_logger(),
         "[Sipl Notification] ICP authentication out-of-order on sensor %u",
         event.uIndex);
       break;
     case NotifType::NOTIF_ERROR_ACP_SETTINGS_DISCONTINUITY:
-      RCLCPP_ERROR(get_logger(),
+      RCLCPP_ERROR(
+        get_logger(),
         "[Sipl Notification] AC plugin settings discontinuity on sensor %u",
         event.uIndex);
       break;
     case NotifType::NOTIF_ERROR_INTR_LOCALIZATION_FAILURE:
-      RCLCPP_ERROR(get_logger(),
+      RCLCPP_ERROR(
+        get_logger(),
         "[Sipl Notification] Interrupt localization failure on sensor %u",
         event.uIndex);
       break;
     case NotifType::NOTIF_ERROR_INTR_LOCALIZATION_TIMEOUT:
-      RCLCPP_ERROR(get_logger(),
+      RCLCPP_ERROR(
+        get_logger(),
         "[Sipl Notification] Interrupt localization timeout on sensor %u",
         event.uIndex);
       break;
     case NotifType::NOTIF_ERROR_ISP_PREFENCE_TIMEOUT:
-      RCLCPP_ERROR(get_logger(),
+      RCLCPP_ERROR(
+        get_logger(),
         "[Sipl Notification] ISP prefence timeout on sensor %u", event.uIndex);
       break;
     case NotifType::NOTIF_INIT_ERROR_FAILURE:
-      RCLCPP_ERROR(get_logger(),
+      RCLCPP_ERROR(
+        get_logger(),
         "[Sipl Notification] Pipeline init error on sensor %u", event.uIndex);
       break;
     case NotifType::NOTIF_ERROR_INTR_RECOVERY:
-      RCLCPP_WARN(get_logger(),
+      RCLCPP_WARN(
+        get_logger(),
         "[Sipl Notification] Interrupt recovery underway on sensor %u",
         event.uIndex);
       break;
     case NotifType::NOTIF_WARN_DEVICE_BLOCK_ERROR_INTR_DETECTED:
-      RCLCPP_WARN(get_logger(),
+      RCLCPP_WARN(
+        get_logger(),
         "[Sipl Notification] Device block error interrupt detected on sensor %u",
         event.uIndex);
       break;
     case NotifType::NOTIF_ERROR_POWER_LOAD_SWITCH_FAILURE:
-      RCLCPP_ERROR(get_logger(),
+      RCLCPP_ERROR(
+        get_logger(),
         "[Sipl Notification] Power load switch failure on sensor %u",
         event.uIndex);
       break;
@@ -1604,76 +1653,36 @@ void SiplCameraNode::handlePipelineNotification(
   }
 }
 
-void SiplCameraNode::allocateCompactPools()
-{
-  // Pre-allocate a fixed pool of GPU padding-removed frame buffers per
-  // pipeline. Pool size is controlled by the `output_buffer_pool_size`
-  // parameter; per-pipeline block size was computed during init from the
-  // probed ISP layout (pipeline.compact_frame_bytes).
-  if (output_buffer_pool_size_ <= 0) {
-    throw std::runtime_error(
-      "output_buffer_pool_size must be > 0, got " +
-      std::to_string(output_buffer_pool_size_));
-  }
-  const size_t pool_size = static_cast<size_t>(output_buffer_pool_size_);
-  for (auto & pipeline : pipelines_) {
-    const size_t compact_frame_bytes = pipeline.compact_frame_bytes;
-    pipeline.compact_pool = std::make_unique<nvidia::isaac_ros::nitros::CUDAMemoryPool>();
-    cudaError_t err = pipeline.compact_pool->create(
-      compact_frame_bytes, pool_size,
-      nvidia::isaac_ros::nitros::CUDAMemoryPool::MemoryType::Device);
-    if (err != cudaSuccess) {
-      throw std::runtime_error(
-        "[" + std::string(pipeline.desc.display_name()) +
-        "] Failed to create output buffer pool: " + cudaGetErrorString(err));
-    }
-    RCLCPP_INFO(get_logger(),
-      "[%s] Pre-allocated output buffer pool: %zu x %zu bytes = %zu bytes",
-      pipeline.desc.display_name(), pool_size, compact_frame_bytes,
-      pool_size * compact_frame_bytes);
-  }
-}
-
 bool SiplCameraNode::publishFrame(
   CameraPipeline & pipeline,
   const std_msgs::msg::Header & header,
   uint32_t step_bytes,
   const std::function<bool(uint8_t * compact_ptr, size_t block_size)> & fill_fn)
 {
-  nvidia::isaac_ros::nitros::NitrosImage image_msg;
+  auto image_msg = std::make_unique<sensor_msgs::msg::Image>();
+  image_msg->header = header;
+  image_msg->height = image_height_;
+  image_msg->width = image_width_;
+  image_msg->encoding = encoding_desired_;
+  image_msg->is_bigendian = 0;
+  image_msg->step = step_bytes;
   try {
-    // from_pool() acquires a block from the compact pool or throws if all
-    // blocks are all held by downstream consumers (natural backpressure).
-    // The write handle records a CUDA event on cuda_stream_ when it falls out
-    // of scope, which consumers await before reading.
-    auto write_handle = image_msg.from_pool(
-      *pipeline.compact_pool, image_width_, image_height_,
-      step_bytes, encoding_desired_, *cuda_stream_);
-    if (!fill_fn(write_handle.get_ptr(), pipeline.compact_pool->block_size())) {
+    image_msg->data = cuda_buffer_backend::allocate_buffer(pipeline.compact_frame_bytes);
+    auto write_handle =
+      cuda_buffer_backend::from_output_buffer(image_msg->data, *pipeline.cuda_stream);
+    if (!fill_fn(write_handle.get_ptr(), image_msg->data.size())) {
       return false;
     }
-  } catch (const std::runtime_error &) {
-    ++pipeline.dropped_pool_exhausted;
-    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
-      "[%s] Compact buffer pool exhausted (all %zu buffers held by downstream), "
-      "dropping frame (total dropped: %" PRIu64 ")",
-      pipeline.desc.display_name(), pipeline.compact_pool->block_count(),
-      pipeline.dropped_pool_exhausted);
-    return false;
   } catch (const std::exception & e) {
-    RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 1000,
-      "[%s] Unexpected exception in publishFrame: %s. Dropping frame",
+    RCLCPP_ERROR_THROTTLE(
+      get_logger(), *get_clock(), 1000,
+      "[%s] Failed to allocate or fill CUDA image: %s. Dropping frame",
       pipeline.desc.display_name(), e.what());
     return false;
   }
 
-  // Set metadata on the NitrosImage (from_pool doesn't accept a header).
-  image_msg.timestamp_sec = header.stamp.sec;
-  image_msg.timestamp_nsec = header.stamp.nanosec;
-  image_msg.frame_id = header.frame_id;
-
   // Publish image and the matching CameraInfo with the same timestamp.
-  pipeline.image_pub->publish(image_msg);
+  pipeline.image_pub->publish(std::move(image_msg));
   publishCameraInfo(pipeline, header);
   return true;
 }
