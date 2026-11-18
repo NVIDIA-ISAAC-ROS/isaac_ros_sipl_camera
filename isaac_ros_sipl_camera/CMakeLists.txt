@@ -119,6 +119,23 @@ ament_auto_add_library(sipl_transport_adapter SHARED
   src/transport_adapter.cpp
 )
 
+ament_auto_add_library(sipl_system_config SHARED
+  src/sipl_system_config.cpp
+)
+
+target_link_libraries(sipl_system_config
+  ${_sipl_common_link_libs}
+)
+
+ament_auto_add_library(sipl_yuv_convert SHARED
+  src/yuv_convert.cpp
+)
+
+target_link_libraries(sipl_yuv_convert
+  CUDA::nppicc
+  ${_sipl_common_link_libs}
+)
+
 # Base camera node library
 ament_auto_add_library(sipl_camera_node SHARED
   src/sipl_camera_node.cpp
@@ -127,10 +144,22 @@ ament_auto_add_library(sipl_camera_node SHARED
 target_link_libraries(sipl_camera_node
   sipl_buffer_manager
   sipl_transport_adapter
+  sipl_system_config
+  sipl_yuv_convert
+  ${isaac_ros_common_LIBRARIES}
   ${NVSIPL_LIB}
   ${NVSIPL_QUERY_LIB}
   ${NVSIPL_PIPELINE_LIB}
+  ${NVCAM_FSYNC_LIB}
   ${_sipl_common_link_libs}
+)
+
+ament_auto_add_library(sipl_multi_camera_node SHARED
+  src/sipl_multi_camera_node.cpp
+)
+
+target_link_libraries(sipl_multi_camera_node
+  sipl_camera_node
 )
 
 # Stereo camera node library
@@ -140,19 +169,28 @@ ament_auto_add_library(sipl_stereo_camera_node SHARED
 
 target_link_libraries(sipl_stereo_camera_node
   sipl_camera_node
-  ${NVCAM_FSYNC_LIB}
 )
 
-foreach(_tgt IN ITEMS sipl_buffer_manager sipl_transport_adapter sipl_camera_node sipl_stereo_camera_node)
+set(_sipl_all_targets
+  sipl_buffer_manager
+  sipl_transport_adapter
+  sipl_system_config
+  sipl_yuv_convert
+  sipl_camera_node
+  sipl_stereo_camera_node
+  sipl_multi_camera_node
+)
+
+foreach(_tgt IN LISTS _sipl_all_targets)
   target_include_directories(${_tgt} PUBLIC ${_sipl_public_includes})
 endforeach()
 
-foreach(_tgt IN ITEMS sipl_camera_node sipl_stereo_camera_node)
+foreach(_tgt IN ITEMS sipl_camera_node sipl_stereo_camera_node sipl_multi_camera_node)
   target_include_directories(${_tgt} PUBLIC ${EIGEN3_INCLUDE_DIR})
 endforeach()
 
 # Set RPATH so NVIDIA SIPL libraries are discoverable at runtime.
-foreach(_tgt IN ITEMS sipl_buffer_manager sipl_transport_adapter sipl_camera_node sipl_stereo_camera_node)
+foreach(_tgt IN LISTS _sipl_all_targets)
   set_target_properties(${_tgt} PROPERTIES
     BUILD_WITH_INSTALL_RPATH TRUE
     BUILD_RPATH_USE_ORIGIN TRUE
@@ -173,6 +211,11 @@ rclcpp_components_register_node(sipl_stereo_camera_node
   EXECUTABLE sipl_stereo_camera_node_exe
 )
 
+rclcpp_components_register_node(sipl_multi_camera_node
+  PLUGIN "isaac_ros::sipl::SiplMultiCameraNode"
+  EXECUTABLE sipl_multi_camera_node_exe
+)
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
@@ -182,7 +225,11 @@ if(BUILD_TESTING)
     cmake_policy(SET CMP0148 OLD)
   endif()
 
+  find_package(ament_cmake_pytest REQUIRED)
   find_package(launch_testing_ament_cmake REQUIRED)
+
+  ament_add_pytest_test(sipl_multi_camera_launch_test
+    test/sipl_multi_camera_launch_test.py)
 
   # Integration tests require a SIPL-capable aarch64 target with a
   # connected Camera-over-Ethernet sensor. We only register them on aarch64 to avoid
@@ -191,12 +238,14 @@ if(BUILD_TESTING)
   # in the test directory
   set(_sipl_test_env "APPEND_ENV" "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/test")
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
-    add_launch_test(test/sipl_camera_stereo_test.py ${_sipl_test_env})
+    # Allow time for each connected camera configuration.
+    add_launch_test(test/sipl_camera_stereo_test.py TIMEOUT 240 ${_sipl_test_env})
     add_launch_test(test/sipl_camera_stereo_nv24_test.py ${_sipl_test_env})
     add_launch_test(test/sipl_camera_mono_test.py ${_sipl_test_env})
     add_launch_test(test/sipl_camera_mono_format_conversion_test.py ${_sipl_test_env})
     add_launch_test(test/sipl_camera_mono_nv24_test.py ${_sipl_test_env})
-    add_launch_test(test/sipl_camera_bench_test.py ${_sipl_test_env})
+    add_launch_test(test/sipl_camera_bench_test.py TIMEOUT 180 ${_sipl_test_env})
+    add_launch_test(test/sipl_camera_mixed_test.py ${_sipl_test_env})
     add_launch_test(test/sipl_camera_stereo_override_test.py ${_sipl_test_env})
     add_launch_test(test/sipl_camera_mono_override_test.py ${_sipl_test_env})
 
@@ -211,6 +260,19 @@ if(BUILD_TESTING)
       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
       ${_sipl_public_includes})
     ament_target_dependencies(transport_adapter_test rclcpp)
+
+    ament_add_gtest(sipl_system_config_test test/sipl_system_config_test.cpp)
+    target_link_libraries(sipl_system_config_test sipl_system_config)
+    target_include_directories(sipl_system_config_test PUBLIC
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+      ${_sipl_public_includes})
+    ament_target_dependencies(sipl_system_config_test rclcpp)
+
+    ament_add_gtest(yuv_convert_test test/yuv_convert_test.cpp)
+    target_link_libraries(yuv_convert_test sipl_yuv_convert)
+    target_include_directories(yuv_convert_test PUBLIC
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+      ${_sipl_public_includes})
 
     # Pure-logic test for the lock-free stereo timestamp aligner (no rclcpp/hardware).
     ament_add_gtest(stereo_timestamp_aligner_test

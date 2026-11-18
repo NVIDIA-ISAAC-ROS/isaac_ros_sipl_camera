@@ -208,6 +208,7 @@ class CalibrationWorkflow(ABC):
 
 
 class EagleCalibrationWorkflow(CalibrationWorkflow):
+
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
 

@@ -22,10 +22,10 @@ Measures FPS and jitter for each camera stream independently (left and right
 are treated as separate pipelines). This test runs even when the two sensors
 do not share a common capture timestamp.
 
-The test description is parametrized over every entry in STEREO_CONFIGS
-(Eagle CoE and Hawk GMSL today). launch_testing runs the benchmark once per
-config; each run is gated by that config's hardware detector and skips if the
-camera is not detected.
+The test description is parametrized over every entry in STEREO_CONFIGS.
+launch_testing runs the benchmark once per config; each run is gated by
+config_skip_reason(), so a config whose camera is not on this bench skips with
+the reason. See ISAAC_ROS_SIPL_CAMERAS in sipl_camera_test_utils.
 
 Metrics reported per stream:
   - Frame count
@@ -57,7 +57,7 @@ import rclpy
 from sensor_msgs.msg import CameraInfo, Image
 
 from sipl_camera_test_utils import (
-    camera_present, EXPECTED_FPS, load_config_for_test,
+    config_skip_reason, EXPECTED_FPS, load_config_for_test,
     STARTUP_TIME_MAX_DELAY, STEREO_CONFIGS,
 )
 
@@ -83,9 +83,9 @@ def generate_test_description(config_name):
     # that config's tests run, so storing state on the class is safe here.
     SiplCameraBenchTest.config_name = config_name
 
-    if not camera_present(config_name):
-        raise unittest.SkipTest(
-            f'No SIPL camera detected for {config_name}. Skipping test.')
+    skip_reason = config_skip_reason(config_name)
+    if skip_reason:
+        raise unittest.SkipTest(skip_reason)
 
     config_path = os.path.join(
         get_package_share_directory('isaac_ros_sipl_camera'),

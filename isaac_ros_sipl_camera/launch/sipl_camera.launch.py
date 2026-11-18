@@ -16,7 +16,17 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import isaac_ros_launch_utils as lu
-from isaac_ros_sipl_camera.launch_utils import load_image_size
+from isaac_ros_sipl_camera.launch_utils import (
+    encoder_input,
+    force_rgb8_for_image_proc,
+    load_image_size,
+    load_native_encoding,
+    load_parameter,
+    load_parameters,
+    query_config_arg_description,
+    query_config_parameters,
+    validate_resize_dimensions,
+)
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
@@ -36,23 +46,37 @@ def launch_setup(context, *args, **kwargs):
     # Determine if format conversion and rectification are needed
     encoding_desired_val = encoding_desired.perform(context)
     rectify_enabled = enable_rectify.perform(context).lower() == 'true'
+    encoding_enabled = LaunchConfiguration('enable_encoding').perform(context).lower() == 'true'
+    resize_enabled = LaunchConfiguration('enable_resize').perform(context).lower() == 'true'
+    resize_width = int(LaunchConfiguration('resize_width').perform(context))
+    resize_height = int(LaunchConfiguration('resize_height').perform(context))
+    if resize_enabled:
+        validate_resize_dimensions(resize_width, resize_height)
 
-    # RectifyNode requires a standard image format (e.g. rgb8, bgr8).
-    # Force conversion to rgb8 when rectify is enabled and no format is set.
     launch_actions = []
-    if rectify_enabled and encoding_desired_val in ('nv12', 'nv24', ''):
-        launch_actions.append(lu.log_info(
-            'Rectify enabled: forcing encoding_desired to rgb8 '
-            'for RectifyNode compatibility.'
-        ))
-        encoding_desired_val = 'rgb8'
+    converter_encoding, conversion_logs = force_rgb8_for_image_proc(
+        encoding_desired_val,
+        rectify_enabled=rectify_enabled,
+        resize_enabled=resize_enabled)
+    for message in conversion_logs:
+        launch_actions.append(lu.log_info(message))
 
-    needs_conversion = encoding_desired_val not in ('nv12', 'nv24', '')
+    needs_conversion = converter_encoding not in ('nv12', 'nv24', '')
 
-    image_width, image_height = load_image_size(param_file.perform(context))
+    param_file_path = param_file.perform(context)
+    native_encoding = load_native_encoding(param_file_path, encoding_desired_val)
+    if (needs_conversion or encoding_enabled) and native_encoding == 'nv24':
+        raise RuntimeError(
+            'Image conversion and H.264 encoding do not support native nv24 output; use nv12.')
+
+    if needs_conversion or rectify_enabled or encoding_enabled:
+        image_width, image_height = load_image_size(param_file_path)
 
     # SIPL monocular camera node
-    sipl_params = [param_file]
+    sipl_params = [load_parameters(param_file_path)]
+    query_config = LaunchConfiguration('query_config').perform(context)
+    if query_config:
+        sipl_params.append(query_config_parameters(param_file_path, query_config))
     if encoding_desired_val in ('nv12', 'nv24'):
         sipl_params.append({'encoding_desired': encoding_desired_val})
 
@@ -73,15 +97,14 @@ def launch_setup(context, *args, **kwargs):
             package='isaac_ros_image_proc',
             plugin='nvidia::isaac_ros::image_proc::ImageFormatConverterNode',
             parameters=[{
-                'encoding_desired': encoding_desired_val,
+                'encoding_desired': converter_encoding,
                 'image_width': image_width,
                 'image_height': image_height,
-                # SIPL ISP buffers are allocated with NvSciColorStd_REC709_ER
-                # (see sipl_buffer_manager.cpp), so use the BT.709 matrix.
                 # CV-CUDA AdvCvtColor does not support full-range (_ER) variants
                 # today, so Y contrast will be slightly off vs. a true full-range
-                # decode; the chroma matrix is what matters most and is correct here.
-                'yuv_color_spec': 'bt709',
+                # decode; the selected chroma matrix remains correct.
+                'yuv_color_spec': load_parameter(
+                    param_file_path, 'yuv_color_spec', 'bt709'),
             }],
             remappings=[
                 ('image', 'image_converted'),
@@ -107,18 +130,41 @@ def launch_setup(context, *args, **kwargs):
         )
         downstream_nodes.append(rectify_node)
 
-    if LaunchConfiguration('enable_encoding').perform(context).lower() == 'true':
+    if resize_enabled:
+        downstream_nodes.append(ComposableNode(
+            name='resize',
+            namespace=camera_namespace,
+            package='isaac_ros_image_proc',
+            plugin='nvidia::isaac_ros::image_proc::ResizeNode',
+            parameters=[{
+                'output_width': resize_width,
+                'output_height': resize_height,
+                'input_queue_size': 4,
+                'output_queue_size': 4,
+            }],
+            remappings=[
+                ('image', 'image_converted' if needs_conversion else 'image_raw'),
+                ('camera_info', 'camera_info'),
+                ('resize/image', 'image_resize'),
+                ('resize/camera_info', 'camera_info_resize'),
+            ],
+        ))
+
+    if encoding_enabled:
+        encoder_image_topic, encoder_size = encoder_input(
+            'image_raw', 'image_resize', (image_width, image_height),
+            resize_enabled, resize_width, resize_height)
         encoder_node = ComposableNode(
             name='encoder_node',
             namespace=camera_namespace,
             package='isaac_ros_h264_encoder',
             plugin='nvidia::isaac_ros::h264_encoder::EncoderNode',
             parameters=[{
-                'input_width': image_width,
-                'input_height': image_height,
+                'input_width': encoder_size[0],
+                'input_height': encoder_size[1],
             }],
             remappings=[
-                ('image_raw', 'image_raw'),
+                ('image_raw', encoder_image_topic),
                 ('image_compressed', 'image_compressed'),
             ],
         )
@@ -158,6 +204,11 @@ def generate_launch_description():
             description='Path to parameter file (default: eagle_mono.yaml)'
         ),
         DeclareLaunchArgument(
+            'query_config',
+            default_value='',
+            description=query_config_arg_description()
+        ),
+        DeclareLaunchArgument(
             'encoding_desired',
             default_value='',
             description='Output image format, for example: nv12/nv24 (native), '
@@ -171,21 +222,39 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'camera_namespace',
             default_value='',
-            description='ROS namespace for the camera node and its topics '
+            description='Namespace applied to every node in this launch file. '
             '(default: empty, root namespace)'
         ),
         DeclareLaunchArgument(
             'enable_rectify',
             default_value='false',
+            choices=['true', 'false'],
             description='Enable image rectification via RectifyNode '
             '(true/false, default: false)'
         ),
         DeclareLaunchArgument(
+            'enable_resize',
+            default_value='false',
+            choices=['true', 'false'],
+            description='Add a ResizeNode that publishes image_resize and '
+            'camera_info_resize'
+        ),
+        DeclareLaunchArgument(
+            'resize_width',
+            default_value='640',
+            description='Width of image_resize and camera_info_resize'
+        ),
+        DeclareLaunchArgument(
+            'resize_height',
+            default_value='480',
+            description='Height of image_resize and camera_info_resize'
+        ),
+        DeclareLaunchArgument(
             'enable_encoding',
             default_value='false',
-            description='H.264 accelerated encoding of the image to image_compressed via '
-            'isaac_ros_h264_encoder '
-            '(true/false, default: false)'
+            choices=['true', 'false'],
+            description='H.264 accelerated encoding of image_resize when resizing is '
+            'enabled, or image_raw otherwise'
         ),
         DeclareLaunchArgument(
             'log_level',

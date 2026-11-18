@@ -179,8 +179,8 @@ nvsipl::SIPLStatus SiplBufferManager::allocateBuffers(
   };
 
   // Determine how many attributes to use based on output type. There's ICP or ISP{0,1,2}.
-  // If ICP: Use only the first 3 attributes (Type, Perm, GPU ID). ICP buffers are
-  // raw and don't need the specific ISP formats.
+  // ICP uses Type, Perm and GPU ID; SIPL supplies the capture layout and CPU-access
+  // attributes.
   // If ISP: Use all attributes. This ensures the buffer is allocated as NV12 Pitch
   // Linear, which is expected by the ISP and consumer.
   const size_t num_attrs = (output_type == nvsipl::INvSIPLClient::ConsumerDesc::OutputType::ICP) ?
@@ -449,6 +449,29 @@ nvsipl::SIPLStatus SiplBufferManager::mapNvmmToCuda(
       "[Buffer manager] NvSciSyncFenceWait latency: %ld us", fence_wait_us);
   }
 
+  return mapObjToCuda(sipl_buffer, out_cuda_buffer, out_cuda_buffer_size, out_attrs);
+}
+
+nvsipl::SIPLStatus SiplBufferManager::mapNvmmToCudaNoFence(
+  nvsipl::INvSIPLClient::INvSIPLNvMBuffer * sipl_buffer,
+  CudaDevicePtr * out_cuda_buffer,
+  size_t * out_cuda_buffer_size,
+  BufferAttributes * out_attrs)
+{
+  if (sipl_buffer == nullptr || out_cuda_buffer == nullptr || out_cuda_buffer_size == nullptr) {
+    return nvsipl::NVSIPL_STATUS_ERROR;
+  }
+  *out_cuda_buffer = nullptr;
+  *out_cuda_buffer_size = 0U;
+  return mapObjToCuda(sipl_buffer, out_cuda_buffer, out_cuda_buffer_size, out_attrs);
+}
+
+nvsipl::SIPLStatus SiplBufferManager::mapObjToCuda(
+  nvsipl::INvSIPLClient::INvSIPLNvMBuffer * sipl_buffer,
+  CudaDevicePtr * out_cuda_buffer,
+  size_t * out_cuda_buffer_size,
+  BufferAttributes * out_attrs)
+{
   // Get NvSciBuf object from SIPL buffer
   NvSciBufObj nvmm_obj = sipl_buffer->GetNvSciBufImage();
   if (nvmm_obj == nullptr) {

@@ -70,11 +70,15 @@ public:
   // Selects the adapter family from `cfg`'s first transport and applies the
   // matching runtime overrides to `cfg` in place. Throws std::runtime_error if
   // `cfg` has no transports or the transport variant is unrecognized.
+  // `erase_unmasked_modules` false leaves `cfg.modules` alone; use it when the
+  // module set was already narrowed upstream (e.g. by INvSIPLCameraQuery::ApplyMask),
+  // so `link_mask` must not filter a second time.
   static std::unique_ptr<TransportAdapter> Create(
     nvsipl::sensorconfig::SensorSystemConfig & cfg,
     const CoeOverrides & coe_overrides,
     uint16_t link_mask,
-    rclcpp::Logger logger);
+    rclcpp::Logger logger,
+    bool erase_unmasked_modules = true);
 
 protected:
   rclcpp::Logger logger_;
@@ -96,15 +100,17 @@ public:
   Type type() const override {return Type::kCoe;}
 };
 
-// GMSL-specific adapter. Filters `cfg` modules by `link_mask`.
+// GMSL-specific adapter. Filters `cfg` modules by `link_mask` unless told not to.
 class GmslTransportAdapter : public TransportAdapter
 {
 public:
-  // Throws std::runtime_error if `link_mask` selects no links.
+  // Throws std::runtime_error if `link_mask` selects no links, unless
+  // `erase_unmasked_modules` is false (then `link_mask` is unused entirely).
   GmslTransportAdapter(
     nvsipl::sensorconfig::SensorSystemConfig & cfg,
     uint16_t link_mask,
-    rclcpp::Logger logger);
+    rclcpp::Logger logger,
+    bool erase_unmasked_modules = true);
 
   std::vector<uint32_t> selectSensors(
     const nvsipl::sensorconfig::SensorSystemConfig & cfg,

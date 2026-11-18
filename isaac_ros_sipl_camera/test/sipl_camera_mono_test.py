@@ -16,10 +16,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Basic mono capture smoke test for the SIPL camera driver.
+Basic mono capture smoke tests for the SIPL camera driver.
 
 Validates that the mono pipeline publishes image_raw and camera_info with
-matching timestamps.
+matching timestamps for every configuration in MONO_CONFIGS.
 """
 
 import os
@@ -32,14 +32,16 @@ from flaky import flaky
 from isaac_ros_test import IsaacROSBaseTest
 from launch_ros.actions import ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
+import launch_testing
 import pytest
 import rclpy
+from rclpy.qos import qos_profile_sensor_data
 
 from sensor_msgs.msg import CameraInfo, Image
 
 from sipl_camera_test_utils import (
-    detect_ethernet_camera, EXPECTED_FPS,
-    load_config_for_test, STARTUP_TIME_MAX_DELAY,
+    assert_consistent_frame_period, cadence_required_frames, config_skip_reason,
+    EXPECTED_FPS, load_config_for_test, MONO_CONFIGS, STARTUP_TIME_MAX_DELAY,
 )
 
 TIMEOUT = 15
@@ -51,23 +53,30 @@ ENCODING_DESIRED = 'nv12'
 
 
 @pytest.mark.rostest
-def generate_test_description():
-    if not detect_ethernet_camera():
-        raise unittest.SkipTest('No SIPL camera detected. Skipping test.')
+@launch_testing.parametrize('config_name', MONO_CONFIGS)
+def generate_test_description(config_name):
+    SiplCameraMonoTest.config_name = config_name
+
+    skip_reason = config_skip_reason(config_name)
+    if skip_reason:
+        raise unittest.SkipTest(skip_reason)
 
     config_path = os.path.join(
         get_package_share_directory('isaac_ros_sipl_camera'),
-        'config', 'eagle_mono.yaml')
+        'config', config_name)
     namespace = SiplCameraMonoTest.generate_namespace()
+    config_parameters = load_config_for_test(
+        config_path, namespace, 'sipl_camera', 'sipl_mono_container')
 
     sipl_mono_node = ComposableNode(
         name='sipl_camera',
         package='isaac_ros_sipl_camera',
         plugin='isaac_ros::sipl::SiplCameraNode',
         namespace=namespace,
-        parameters=load_config_for_test(
-            config_path, namespace, 'sipl_camera', 'sipl_mono_container')
-        + [{'encoding_desired': ENCODING_DESIRED}],
+        parameters=config_parameters + [{
+            'encoding_desired': ENCODING_DESIRED,
+            'use_hw_timestamp': True,
+        }],
     )
 
     return SiplCameraMonoTest.generate_test_description([
@@ -85,6 +94,28 @@ def generate_test_description():
 
 class SiplCameraMonoTest(IsaacROSBaseTest):
     filepath = pathlib.Path(os.path.dirname(__file__))
+    config_name = ''
+
+    @flaky(max_runs=3, min_passes=1)
+    def test_mono_camera_info_cadence(self):
+        """Verify every post-warmup capture interval is consistent with 30 FPS."""
+        stamps_ns = []
+
+        def receive_camera_info(info):
+            stamps_ns.append(
+                info.header.stamp.sec * 1_000_000_000 + info.header.stamp.nanosec)
+
+        subscription = self.node.create_subscription(
+            CameraInfo, 'camera_info', receive_camera_info, qos_profile_sensor_data)
+        self.assertIsNotNone(subscription)
+
+        required_frames = cadence_required_frames(EXPECTED_FPS)
+        end_time = time.time() + TIMEOUT
+        while time.time() < end_time and len(stamps_ns) < required_frames:
+            rclpy.spin_once(self.node, timeout_sec=0.1)
+
+        assert_consistent_frame_period(
+            self, self.config_name, stamps_ns, EXPECTED_FPS)
 
     # Temporarily mitigate flaky SIPL CoE camera initialization issues.
     @flaky(max_runs=3, min_passes=1)
@@ -110,7 +141,7 @@ class SiplCameraMonoTest(IsaacROSBaseTest):
 
         self.assertGreaterEqual(
             len(received_messages), MIN_SYNCED_MSGS,
-            f'Insufficient synced image + camera_info messages: '
+            f'[{self.config_name}] insufficient synced image + camera_info messages: '
             f'{len(received_messages)} < {MIN_SYNCED_MSGS}')
         for img, info in received_messages:
             self.assertEqual(

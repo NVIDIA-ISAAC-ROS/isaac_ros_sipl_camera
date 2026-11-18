@@ -127,6 +127,13 @@ public:
     size_t * out_cuda_buffer_size,
     BufferAttributes * out_attrs);
 
+  /// Map an ICP buffer, whose capture completes before it enters the completion queue.
+  nvsipl::SIPLStatus mapNvmmToCudaNoFence(
+    nvsipl::INvSIPLClient::INvSIPLNvMBuffer * sipl_buffer,
+    CudaDevicePtr * out_cuda_buffer,
+    size_t * out_cuda_buffer_size,
+    BufferAttributes * out_attrs);
+
   /**
    * @brief Query buffer attributes from the first allocated buffer
    *
@@ -146,6 +153,12 @@ public:
   rclcpp::Logger get_logger() const {return logger_;}
 
 private:
+  nvsipl::SIPLStatus mapObjToCuda(
+    nvsipl::INvSIPLClient::INvSIPLNvMBuffer * sipl_buffer,
+    CudaDevicePtr * out_cuda_buffer,
+    size_t * out_cuda_buffer_size,
+    BufferAttributes * out_attrs);
+
   nvsipl::SIPLStatus getOrCreateCudaMapping(
     NvSciBufObj sci_buf_obj,
     size_t mapping_size,

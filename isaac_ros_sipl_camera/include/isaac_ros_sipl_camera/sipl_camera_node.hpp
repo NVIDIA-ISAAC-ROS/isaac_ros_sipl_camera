@@ -22,9 +22,13 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <cinttypes>
@@ -34,12 +38,13 @@
 #include "sensor_msgs/msg/image.hpp"
 #include "camera_info_manager/camera_info_manager.hpp"
 #include "tf2/LinearMath/Matrix3x3.hpp"
-#include "tf2_ros/static_transform_broadcaster.h"
+#include "tf2_ros/static_transform_broadcaster.hpp"
 
 #include "isaac_ros_sipl_camera/sipl_buffer_manager.hpp"
 #include "isaac_ros_sipl_camera/transport_adapter.hpp"
 #include "isaac_ros_sipl_camera/tsc_correlator.hpp"
 #include "isaac_ros_sipl_camera/stereo_timestamp_aligner.hpp"
+#include "isaac_ros_sipl_camera/yuv_convert.hpp"
 
 #include "isaac_ros_common/cuda_stream.hpp"
 #include "isaac_ros_common/qos.hpp"
@@ -67,7 +72,8 @@ public:
   virtual ~SiplCameraNode();
 
 protected:
-  SiplCameraNode(const rclcpp::NodeOptions & options, bool defer_initialization);
+  /// Defer initialization until the derived node has declared its parameters.
+  SiplCameraNode(const rclcpp::NodeOptions & options, const std::string & node_name);
 
   /// Struct to describe the pipeline.
   /// The name field doubles as the ROS topic prefix:
@@ -75,14 +81,53 @@ protected:
   /// "left"/"right" for stereo (topics are "left/image_raw", "left/camera_info").
   struct PipelineDescriptor
   {
+    /// kAuto selects ICP for YUV422 sensors and ISP0 for RAW sensors.
+    enum class Output { kAuto, kIsp0, kIcp };
+
     std::string name;
     uint32_t sensor_id;                   // SIPL global sensor id (CommonSensorConfig::id)
     std::string frame_id;                 // optical frame name for headers
     sensor_msgs::msg::CameraInfo camera_info;
     bool camera_info_loaded = false;
 
+    /// Topic namespace relative to the node namespace; empty uses `name`.
+    std::string topic_prefix;
+
+    bool sensor_id_explicit = false;
+    Output requested_output = Output::kAuto;
+    /// Request ICP alongside ISP0 for the mono/stereo drain loop.
+    bool raw_output = true;
+    /// Empty values inherit the node-level parameters.
+    std::string encoding;
+    std::string nito_file;
+
     /// Returns a human-readable name for log messages.
     const char * display_name() const {return name.empty() ? "camera" : name.c_str();}
+  };
+
+  struct PipelineStatistics
+  {
+    std::atomic<uint64_t> icp_frames_completed{0};
+    std::atomic<uint64_t> frames_acquired{0};
+    std::atomic<uint64_t> frames_published{0};
+    std::atomic<uint64_t> app_frame_drops{0};
+    // CUDA errors detected after ROS publication.
+    std::atomic<uint64_t> published_frame_errors{0};
+    std::atomic<uint64_t> stereo_desyncs{0};
+    std::atomic<int64_t> first_publish_ns{0};
+    std::atomic<int64_t> last_publish_ns{0};
+    std::atomic<uint64_t> previous_report_published{0};
+    std::atomic<int64_t> previous_report_ns{0};
+    std::atomic<uint64_t> latency_samples{0};
+    std::atomic<uint64_t> latency_violations{0};
+    std::atomic<int64_t> last_latency_error_ns{0};
+
+    // Protect the stall state and notification totals across pipeline threads.
+    std::mutex details_mutex;
+    uint64_t output_stall_episodes{0};
+    uint64_t output_stall_total_ns{0};
+    int64_t output_stall_start_ns{0};
+    std::map<uint16_t, uint64_t> sipl_event_totals;
   };
 
   /// Owns all per-sensor runtime state. The descriptor (moved in from
@@ -94,8 +139,22 @@ protected:
   {
     PipelineDescriptor desc;
     uint32_t sensor_id = 0;
+    nvsipl::NvSIPLPipelineConfiguration cfg{};
+    uint32_t image_width = 0;
+    uint32_t image_height = 0;
+    std::string encoding;
+    sensor_msgs::msg::CameraInfo camera_info_msg;
+    bool publish_from_capture = false;
+    bool capture_enabled = true;
+    PackedYuvOrder packed_yuv_order = PackedYuvOrder::kUyvy;
+    // Owned by timestamp_aligners_.
+    StereoTimestampAligner * aligner = nullptr;
     nvsipl::NvSIPLPipelineQueues queues;
     NvSciSyncObj sci_sync_isp0 = nullptr;
+    // NvSciSync permits only one outstanding fence wait per CPU wait context.
+    // Each pipeline owns its context, including during initialization failure.
+    std::unique_ptr<NvSciSyncCpuWaitContextRec, decltype(&NvSciSyncCpuWaitContextFree)>
+    cpu_wait_context{nullptr, &NvSciSyncCpuWaitContextFree};
     std::shared_ptr<SiplBufferManager> buffer_manager_icp;
     std::shared_ptr<SiplBufferManager> buffer_manager_isp0;
     std::thread pipeline_thread;
@@ -109,6 +168,8 @@ protected:
     // two-copy compaction path.
     bool needs_compaction = true;
     size_t compact_frame_bytes = 0;
+    std::shared_ptr<PipelineStatistics> statistics =
+      std::make_shared<PipelineStatistics>();
   };
 
   // Shared constants
@@ -144,34 +205,51 @@ protected:
   /// Perform transport-specific preparation immediately before SIPL Start().
   virtual void prepareCaptureStart();
 
+  void restartFsyncGroup(uint32_t fsync_group_id);
+
   // --- Shared camera info / utilities for derived nodes ---
   sensor_msgs::msg::CameraInfo loadCameraInfoFromFile(
     const std::string & camera_info_url);
+
+  void declareTimestampAlignmentParams();
 
   // Shared utilities
   std::vector<uint8_t> loadNitoFile(const std::string & path);
   uint64_t extractTscTimestamp(nvsipl::INvSIPLClient::INvSIPLNvMBuffer * buffer);
   uint64_t nanosecondsToTscTicks(uint64_t nanoseconds) const;
-  NvSciBufSurfSampleType getSurfSampleTypeFromEncoding() const;
+  NvSciBufSurfSampleType getSurfSampleTypeFromEncoding(const std::string & encoding) const;
 
   void handlePipelineNotification(
+    CameraPipeline & pipeline,
     const nvsipl::NvSIPLPipelineNotifier::NotificationData & event);
 
-  void processFrame(
+  /// Returns true when the frame was published.
+  bool processIspFrame(
     nvsipl::INvSIPLClient::INvSIPLNvMBuffer * buffer,
     CameraPipeline & pipeline,
     std::chrono::steady_clock::time_point isp0_start_time);
 
-  // Allocates a CUDA-backed image, populates it with NV12/NV24 bytes, and publishes
-  // sensor_msgs/Image + matching CameraInfo.
-  //
-  // `step_bytes` is the row stride from `attrs.plane_pitches[0]`. This may not equal
-  // image_width_ when the ISP produces per-row padding that the compactor preserves.
+  /// Convert a packed capture buffer to NV12; return whether it was published.
+  bool processCaptureFrame(
+    nvsipl::INvSIPLClient::INvSIPLNvMBuffer * buffer,
+    CameraPipeline & pipeline,
+    std::chrono::steady_clock::time_point capture_start_time);
+
+  /// Return the SOF-derived, optionally aligned header, or nullopt for a zero TSC.
+  std::optional<std_msgs::msg::Header> buildFrameHeader(
+    CameraPipeline & pipeline,
+    nvsipl::INvSIPLClient::INvSIPLNvMBuffer * buffer,
+    uint64_t * out_raw_tsc = nullptr);
+
+  // Fill a CUDA image and publish it with matching CameraInfo.
+  // after_fill runs before publication; either callback can abort by returning false.
+  // step_bytes is the luma row stride, including padding.
   bool publishFrame(
     CameraPipeline & pipeline,
     const std_msgs::msg::Header & header,
     uint32_t step_bytes,
-    const std::function<bool(uint8_t * compact_ptr, size_t block_size)> & fill_fn);
+    const std::function<bool(uint8_t * compact_ptr, size_t block_size)> & fill_fn,
+    const std::function<bool()> & after_fill = {});
 
   // --- Per-pipeline runtime state ---
   std::vector<CameraPipeline> pipelines_;
@@ -188,7 +266,6 @@ protected:
 
   // NvSci modules
   std::shared_ptr<NvSciBufModuleRec> sci_buf_module_;
-  NvSciSyncCpuWaitContext cpu_wait_context_;
 
   // TF broadcasting
   std::unique_ptr<tf2_ros::StaticTransformBroadcaster> tf_static_broadcaster_;
@@ -196,18 +273,29 @@ protected:
   // Threading
   std::atomic<bool> stop_capture_;
 
-  // Camera parameters
-  uint32_t image_width_;
-  uint32_t image_height_;
-
   // ROS Parameters
   std::string platform_config_;
+  std::string platform_config_file_;
   std::string encoding_desired_;
   std::string camera_link_frame_name_;
   std::string nito_file_;
+  bool owns_sipl_env_{false};
+  std::vector<std::pair<std::string, std::optional<std::string>>> previous_sipl_env_;
+  bool publish_tf_{true};
   bool enable_debug_logs_{false};
+  bool enable_statistics_{false};
+  double statistics_interval_s_{60.0};
+  std::atomic<bool> statistics_stopping_{false};
+  std::atomic<bool> stop_notifications_{false};
+  std::mutex statistics_report_mutex_;
+  rclcpp::TimerBase::SharedPtr statistics_timer_;
   rclcpp::QoS output_qos_;
-  uint16_t link_mask_{0x0001};
+  uint16_t capture_buffer_count_{4U};
+  // GMSL link selection in plain bit positions (bit i = link i), one entry per
+  // transport in the platform configuration.
+  std::vector<uint16_t> link_masks_{0x0001};
+  uint32_t fsync_group_id_{0U};
+  bool enable_fsync_restart_{true};
   double first_frame_timeout_s_{5.0};
   // Flag to mark when the first frame timeout has already been reported.
   std::atomic<bool> first_frame_timeout_reported_{false};
@@ -216,6 +304,8 @@ protected:
   bool align_stereo_timestamps_{false};
   double max_timestamp_diff_us_{500.0};
   double expected_fps_{30.0};
+  // Pairs used for TF and timestamp alignment; set before initialize().
+  std::vector<std::pair<std::string, std::string>> stereo_pair_names_;
   // Count of stereo pairs that arrived skewed beyond max_timestamp_diff_us (kept
   // unaligned, so the downstream ExactTime gate drops them). Incremented from both
   // pipeline threads. Note: this counts skew-induced drops only, not pairs lost
@@ -228,9 +318,12 @@ protected:
 
 private:
   // --- Internal init helpers (called by initialize()) ---
-  void setupSiplCamera(size_t num_sensors);
+  void setupSiplCamera(const std::vector<PipelineDescriptor> & descriptors);
   std::vector<PipelineDescriptor> resolvePipelineDescriptors(
     std::vector<PipelineDescriptor> requested_descriptors);
+  void resolvePipelineOutputs(CameraPipeline & pipeline);
+  void buildPipelineConfig(CameraPipeline & pipeline);
+  void buildTimestampAligners();
   void allocateBuffersForPipeline(CameraPipeline & pipeline);
   void registerBuffersForPipeline(CameraPipeline & pipeline);
   void createPublisherForPipeline(CameraPipeline & pipeline);
@@ -240,18 +333,23 @@ private:
   // --- Thread entry points ---
   void pipelineThread(CameraPipeline & pipeline);
   void handleNotificationQueue(CameraPipeline & pipeline);
+  void logStatistics(const char * report_type, bool final_report = false);
 
-  void publishCameraInfo(const CameraPipeline & pipeline, const std_msgs::msg::Header & header);
+  void publishCameraInfo(CameraPipeline & pipeline, const std_msgs::msg::Header & header);
 
   void allocateSync(
     uint32_t sensor_id,
     nvsipl::INvSIPLClient::ConsumerDesc::OutputType output_type,
     NvSciSyncObj & sync);
-  void registerAutoControlPlugin(uint32_t sensor_id);
+  void registerAutoControlPlugin(const CameraPipeline & pipeline);
 
-  bool validateBufferFormat(
+  bool validateIsp0BufferFormat(
     const BufferAttributes & attrs,
     const CameraPipeline & pipeline) const;
+
+  bool validateCaptureBufferFormat(
+    const BufferAttributes & attrs,
+    CameraPipeline & pipeline) const;
 
   NvSciSyncModule sci_sync_module_;
 
@@ -259,10 +357,11 @@ private:
   int hsb_id_;
   std::string interface_name_;
   bool use_hw_timestamp_;
+  double max_capture_to_publish_latency_frame_periods_{2.0};
   std::string optical_frame_name_;
 
   TscCorrelator tsc_correlator_;
-  std::unique_ptr<StereoTimestampAligner> stereo_timestamp_aligner_;
+  std::vector<std::unique_ptr<StereoTimestampAligner>> timestamp_aligners_;
 };
 
 }  // namespace sipl
