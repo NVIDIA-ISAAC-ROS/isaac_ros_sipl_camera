@@ -18,10 +18,10 @@
 """
 Stereo capture tests for the SIPL camera driver.
 
-The test description is parametrized over every entry in STEREO_CONFIGS
-(Eagle CoE and Hawk GMSL today). launch_testing runs the whole test class once
-per config; each run is gated by that config's hardware detector and skips if the
-camera is not detected.
+The test description is parametrized over every entry in STEREO_CONFIGS.
+launch_testing runs the whole test class once per config; each run is gated by
+config_skip_reason(), so a config whose camera is not on this bench skips with
+the reason. See ISAAC_ROS_SIPL_CAMERAS in sipl_camera_test_utils.
 
 test_stereo_capture: validates that both left and right pipelines come up and
 publish messages. Each side (left image + camera_info) is verified independently.
@@ -33,6 +33,7 @@ test_stereo_exact_time_sync: validates cross-camera exact time synchronization
 (all four topics share the same timestamp) when enabled by the camera configuration.
 """
 
+import functools
 import os
 import pathlib
 import time
@@ -46,12 +47,13 @@ from launch_ros.descriptions import ComposableNode
 import launch_testing
 import pytest
 import rclpy
+from rclpy.qos import qos_profile_sensor_data
 
 from sensor_msgs.msg import CameraInfo, Image
 
 from sipl_camera_test_utils import (
-    camera_present, EXPECTED_FPS, load_config_for_test,
-    STARTUP_TIME_MAX_DELAY, STEREO_CONFIGS,
+    assert_consistent_frame_period, cadence_required_frames, config_skip_reason,
+    EXPECTED_FPS, load_config_for_test, STARTUP_TIME_MAX_DELAY, STEREO_CONFIGS,
 )
 
 TIMEOUT = 15
@@ -74,9 +76,9 @@ def generate_test_description(config_name):
     # that config's tests run, so storing state on the class is safe here.
     SiplCameraStereoTest.config_name = config_name
 
-    if not camera_present(config_name):
-        raise unittest.SkipTest(
-            f'No SIPL camera detected for {config_name}. Skipping test.')
+    skip_reason = config_skip_reason(config_name)
+    if skip_reason:
+        raise unittest.SkipTest(skip_reason)
 
     config_path = os.path.join(
         get_package_share_directory('isaac_ros_sipl_camera'),
@@ -99,6 +101,7 @@ def generate_test_description(config_name):
             'encoding_desired': ENCODING_DESIRED,
             # Latency checks measure SOF stamp -> callback; require HW SOF timestamps.
             'use_hw_timestamp': True,
+            'expected_fps': float(EXPECTED_FPS),
         }],
     )
 
@@ -120,6 +123,35 @@ class SiplCameraStereoTest(IsaacROSBaseTest):
     # Set in generate_test_description() so messages identify the active config.
     config_name = ''
     supports_stereo_pairing = False
+
+    @flaky(max_runs=3, min_passes=1)
+    def test_stereo_camera_info_cadence(self):
+        """Verify each stereo side maintains a consistent 30 FPS capture period."""
+        topics = ('left/camera_info', 'right/camera_info')
+        stamps_ns = {topic: [] for topic in topics}
+
+        def receive_camera_info(topic, info):
+            stamps_ns[topic].append(
+                info.header.stamp.sec * 1_000_000_000 + info.header.stamp.nanosec)
+
+        subscriptions = [
+            self.node.create_subscription(
+                CameraInfo, topic, functools.partial(receive_camera_info, topic),
+                qos_profile_sensor_data)
+            for topic in topics
+        ]
+        self.assertEqual(len(subscriptions), len(topics))
+
+        required_frames = cadence_required_frames(EXPECTED_FPS)
+        end_time = time.time() + TIMEOUT
+        while time.time() < end_time:
+            rclpy.spin_once(self.node, timeout_sec=0.1)
+            if all(len(stamps_ns[topic]) >= required_frames for topic in topics):
+                break
+
+        for topic in topics:
+            assert_consistent_frame_period(
+                self, f'{self.config_name}:{topic}', stamps_ns[topic], EXPECTED_FPS)
 
     def test_stereo_camera_info_receive_latency(self):
         """

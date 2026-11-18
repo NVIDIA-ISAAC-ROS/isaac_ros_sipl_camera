@@ -173,7 +173,8 @@ std::unique_ptr<TransportAdapter> TransportAdapter::Create(
   nvsipl::sensorconfig::SensorSystemConfig & cfg,
   const CoeOverrides & coe_overrides,
   uint16_t link_mask,
-  rclcpp::Logger logger)
+  rclcpp::Logger logger,
+  bool erase_unmasked_modules)
 {
   if (cfg.transports.empty()) {
     throw std::runtime_error(
@@ -187,7 +188,8 @@ std::unique_ptr<TransportAdapter> TransportAdapter::Create(
     return std::make_unique<CoeTransportAdapter>(cfg, coe_overrides, logger);
   }
   if (std::holds_alternative<nvsipl::sensorconfig::GmslTransportConfig>(first)) {
-    return std::make_unique<GmslTransportAdapter>(cfg, link_mask, logger);
+    return std::make_unique<GmslTransportAdapter>(
+      cfg, link_mask, logger, erase_unmasked_modules);
   }
   throw std::runtime_error(
     "TransportAdapter::Create: unrecognized transport variant");
@@ -319,9 +321,17 @@ std::vector<uint32_t> CoeTransportAdapter::selectSensors(
 GmslTransportAdapter::GmslTransportAdapter(
   nvsipl::sensorconfig::SensorSystemConfig & cfg,
   uint16_t link_mask,
-  rclcpp::Logger logger)
+  rclcpp::Logger logger,
+  bool erase_unmasked_modules)
 : TransportAdapter(logger)
 {
+  if (!erase_unmasked_modules) {
+    RCLCPP_INFO(
+      logger_,
+      "GmslTransportAdapter: module set already narrowed upstream; ignoring link_mask");
+    return;
+  }
+
   if (link_mask == 0U) {
     throw std::runtime_error("GMSL link_mask must select at least one link; got 0x0000");
   }
